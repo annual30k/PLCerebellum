@@ -1,6 +1,36 @@
 name: patrol-cerebellum
 
 services:
+  llama:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    container_name: patrol-cerebellum-llama
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      HF_HOME: /models/.cache/huggingface
+    command:
+      - --hf-repo
+      - jc-builds/Qwen3.5-4B-Q4_K_M-GGUF
+      - --hf-file
+      - Qwen3.5-4B-Q4_K_M.gguf
+      - --alias
+      - Qwen3.5-4B-INT4
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - -c
+      - "16384"
+      - -ngl
+      - "99"
+    ports:
+      - "127.0.0.1:8089:8080"
+    volumes:
+      - ./models:/models
+    pids_limit: 512
+    mem_limit: 12g
+    cpus: 8
+
   cerebellum:
     build:
       context: .
@@ -23,8 +53,12 @@ services:
       CEREBELLUM_POWER_MODE: standard
       CEREBELLUM_SECURE_BOOT: "true"
       CEREBELLUM_READONLY_ROOTFS: "true"
+      CEREBELLUM_LLM_BASE_URL: http://llama:8080/v1
+      CEREBELLUM_LLM_TIMEOUT_SECONDS: "180"
+    depends_on:
+      - llama
     ports:
-      - "8088:8088"
+      - "127.0.0.1:8088:8088"
     volumes:
       - cerebellum-data:/var/lib/cerebellum
       - cerebellum-logs:/var/log/cerebellum
@@ -51,4 +85,3 @@ services:
 volumes:
   cerebellum-data:
   cerebellum-logs:
-

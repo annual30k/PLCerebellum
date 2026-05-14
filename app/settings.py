@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     llm_model: str = "Qwen3.5-4B-INT4"
     llm_fallback_model: str = "Qwen3.5-2B-INT4"
     llm_batch_model: str = "Qwen3.5-9B-INT4"
+    llm_base_url: str | None = None
+    llm_timeout_seconds: float = 180.0
     context_tokens: int = 16_384
     max_context_tokens: int = 32_768
     storage_gb: int = 1024
@@ -39,4 +41,3 @@ def load_device_config() -> dict:
         return {}
     with settings.config.open("r", encoding="utf-8") as file:
         return yaml.safe_load(file) or {}
-

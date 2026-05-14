@@ -124,13 +124,15 @@ def create_report(request: ReportRequest) -> dict:
 
 @app.get("/api/v1/events")
 def list_events() -> dict:
-    return {"count": len(state.events), "events": state.events[-100:]}
+    events = list(state.events)
+    return {"count": len(events), "retention_limit": 1000, "events": events[-100:]}
 
 
 @app.get("/api/v1/audit")
 def list_audit() -> dict:
+    records = list(state.audit_log)
     return {
-        "count": len(state.audit_log),
-        "records": [record.model_dump(mode="json") for record in state.audit_log[-100:]],
+        "count": len(records),
+        "retention_limit": 1000,
+        "records": [record.model_dump(mode="json") for record in records[-100:]],
     }
-
