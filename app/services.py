@@ -3,7 +3,7 @@ from hashlib import sha256
 
 import httpx
 
-from app.models import FaceAnalyzeRequest, PlateAnalyzeRequest, ReportRequest
+from app.models import FaceAnalyzeRequest, PlateAnalyzeRequest, ReportRequest, VideoSummaryRequest
 from app.settings import Settings
 from app.state import DeviceState
 from app.vision import VisionUnavailable, detect_faces, recognize_plate
@@ -90,6 +90,121 @@ def analyze_face_image(request: FaceAnalyzeRequest, settings: Settings, state: D
     }
 
 
+def summarize_video(request: VideoSummaryRequest, settings: Settings, state: DeviceState) -> dict:
+    events = filter_video_events(state.event_snapshot(), request.stream_id)[-request.event_limit :]
+    summary = build_structured_video_summary(request, events, settings)
+    if request.use_llm and settings.llm_base_url:
+        model = settings.llm_fallback_model if state.temperature_c >= 72 or state.battery_percent <= 20 else settings.llm_model
+        if model == settings.llm_model:
+            try:
+                llm_content = generate_video_summary_with_llama_cpp(request, summary, settings, model)
+                summary["content"] = llm_content
+                summary["backend"] = "llama.cpp"
+                summary["model"] = model
+            except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
+                state.audit("llm.video_summary.fallback", {"model": model, "error": str(exc)})
+    return summary
+
+
+def filter_video_events(events: list[dict], stream_id: str | None) -> list[dict]:
+    video_event_types = {
+        "media_ingest",
+        "stream_registered",
+        "stream_stopped",
+        "stream_session_closed",
+        "stream_plate_candidate",
+        "stream_face_candidate",
+        "stream_object_candidate",
+        "plate_candidate",
+        "face_candidate",
+        "object_candidate",
+        "audio_transcribed",
+    }
+    filtered = []
+    for event in events:
+        if event.get("event_type") not in video_event_types:
+            continue
+        payload = event.get("payload", {})
+        if stream_id and payload.get("stream_id") != stream_id:
+            continue
+        filtered.append(event)
+    return filtered
+
+
+def build_structured_video_summary(request: VideoSummaryRequest, events: list[dict], settings: Settings) -> dict:
+    plate_events = [event for event in events if event.get("event_type") in {"stream_plate_candidate", "plate_candidate"}]
+    face_events = [event for event in events if event.get("event_type") in {"stream_face_candidate", "face_candidate"}]
+    object_events = [event for event in events if event.get("event_type") in {"stream_object_candidate", "object_candidate"}]
+    audio_events = [event for event in events if event.get("event_type") == "audio_transcribed"]
+    stream_events = [
+        event
+        for event in events
+        if event.get("event_type") in {"stream_registered", "stream_stopped", "stream_session_closed", "media_ingest"}
+    ]
+    plate_numbers = []
+    face_candidates = []
+    timeline = []
+
+    for event in events:
+        payload = event.get("payload", {})
+        timeline.append(
+            {
+                "time": event.get("created_at"),
+                "event_type": event.get("event_type"),
+                "stream_id": payload.get("stream_id"),
+                "frame_id": payload.get("frame_id"),
+                "backend": payload.get("backend"),
+                "candidate_count": payload.get("candidate_count"),
+                "face_count": payload.get("face_count"),
+                "detection_count": payload.get("detection_count"),
+                "duration_seconds": payload.get("duration_seconds"),
+            }
+        )
+        for candidate in payload.get("candidates", []) or []:
+            plate_number = candidate.get("plate_number")
+            if plate_number and plate_number not in plate_numbers:
+                plate_numbers.append(plate_number)
+        for face in payload.get("faces", []) or []:
+            candidate = face.get("candidate")
+            if candidate:
+                face_candidates.append(candidate)
+
+    started_at = events[0]["created_at"] if events else None
+    ended_at = events[-1]["created_at"] if events else None
+    content = (
+        f"视频摘要：任务 {request.mission_id} 共纳入 {len(events)} 条结构化事件。"
+        f"其中视频/流事件 {len(stream_events)} 条，车牌识别事件 {len(plate_events)} 条，"
+        f"人脸候选事件 {len(face_events)} 条，目标检测事件 {len(object_events)} 条，"
+        f"音频转写事件 {len(audio_events)} 条。"
+        f"识别到的去重车牌数量为 {len(plate_numbers)}，人脸候选数量为 {len(face_candidates)}。"
+        "所有 AI 结果均为候选提示，需结合原始视频和人工复核。"
+    )
+    if request.operator_note:
+        content += f" 人工补充：{request.operator_note}。"
+
+    return {
+        "mission_id": request.mission_id,
+        "stream_id": request.stream_id,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "event_count": len(events),
+        "stream_event_count": len(stream_events),
+        "plate_event_count": len(plate_events),
+        "face_event_count": len(face_events),
+        "object_event_count": len(object_events),
+        "audio_event_count": len(audio_events),
+        "unique_plate_numbers": plate_numbers,
+        "face_candidates": face_candidates[:20],
+        "timeline": timeline[-50:],
+        "content": content,
+        "backend": "structured",
+        "model": None,
+        "requires_human_confirmation": True,
+        "context_tokens": settings.context_tokens,
+    }
+
+
 def generate_report(request: ReportRequest, settings: Settings, state: DeviceState) -> dict:
     model = choose_llm_model(request, settings, state)
     if settings.llm_base_url and model == settings.llm_model:
@@ -124,6 +239,47 @@ def generate_report(request: ReportRequest, settings: Settings, state: DeviceSta
         "requires_human_confirmation": True,
         "backend": "simulated-fallback",
     }
+
+
+def generate_video_summary_with_llama_cpp(
+    request: VideoSummaryRequest,
+    summary: dict,
+    settings: Settings,
+    model: str,
+) -> str:
+    system_prompt = (
+        "你是部署在单兵边缘智能小脑服务器中的执法视频摘要助手。"
+        "你只能根据结构化事件生成摘要草稿。"
+        "不得把人脸候选、车牌候选或目标检测结果写成确定事实。"
+        "必须提示需要人工复核原始视频。"
+        "输出中文，简洁、正式，不输出思考过程。"
+    )
+    user_prompt = (
+        f"任务编号：{request.mission_id}\n"
+        f"人工补充：{request.operator_note or '无'}\n"
+        f"结构化摘要：{summary}\n"
+        "请生成执法视频摘要草稿，包含：视频范围、时间线概况、识别候选、异常或待复核事项、证据复核提醒。"
+    )
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "chat_template_kwargs": {"enable_thinking": False},
+        "temperature": 0.4,
+        "top_p": 0.8,
+        "max_tokens": request.max_tokens,
+    }
+    url = f"{settings.llm_base_url.rstrip('/')}/chat/completions"
+    response = httpx.post(url, json=payload, timeout=settings.llm_timeout_seconds)
+    response.raise_for_status()
+    data = response.json()
+    message = data["choices"][0]["message"]
+    content = (message.get("content") or message.get("reasoning_content") or "").strip()
+    if not content:
+        raise ValueError("llama.cpp returned an empty response")
+    return content
 
 
 def generate_report_with_llama_cpp(

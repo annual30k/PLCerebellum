@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import field_validator
 import yaml
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -31,6 +32,34 @@ class Settings(BaseSettings):
     stream_frame_dir: Path = Path("/var/lib/cerebellum/stream_frames")
     stream_max_sources: int = 2
     stream_retained_frames_per_source: int = 120
+    api_key: str | None = None
+    asr_model: str = "edge-asr-sim"
+    asr_base_url: str | None = None
+    object_model: str = "yolov8n.pt"
+    object_model_path: Path | None = None
+    evidence_encrypt_by_default: bool = True
+    evidence_key: str | None = None
+    sync_destination_url: str | None = None
+    cert_file: Path | None = None
+    key_file: Path | None = None
+    ca_file: Path | None = None
+    mtls_required: bool = False
+
+    @field_validator(
+        "asr_base_url",
+        "object_model_path",
+        "evidence_key",
+        "sync_destination_url",
+        "cert_file",
+        "key_file",
+        "ca_file",
+        mode="before",
+    )
+    @classmethod
+    def blank_to_none(cls, value: object) -> object:
+        if value == "":
+            return None
+        return value
 
 
 @lru_cache

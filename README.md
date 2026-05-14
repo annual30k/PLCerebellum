@@ -2,7 +2,7 @@
 
 该目录用于模拟“单兵边缘智能小脑服务器”的量产运行环境。它不是完整 AI 算法镜像，而是一个贴近目标硬件和系统裁剪策略的可运行原型，用于验证设备状态、视频接入、车牌/人脸候选、报告生成、审计日志和系统加固策略。
 
-当前版本已经接入真实 `Qwen3.5-4B Q4_K_M GGUF` 本地模型，通过 llama.cpp server 提供 OpenAI 兼容接口。车牌识别和人脸检测/特征提取也已经接入真实开源算法；视频流接入已经支持 RTSP/HTTP/本地视频文件的后台抽帧分析。视频摘要、ASR 和目标检测仍未接入真实模型。
+当前版本已经接入真实 `Qwen3.5-4B Q4_K_M GGUF` 本地模型，通过 llama.cpp server 提供 OpenAI 兼容接口。车牌识别和人脸检测/特征提取也已经接入真实开源算法；视频流接入已经支持 RTSP/HTTP/本地视频文件的后台抽帧分析。视频摘要、ASR、目标检测、证据保护和后台同步已经具备 MVP API，其中 ASR 支持外部服务接入并提供模拟回退，目标检测支持可选 Ultralytics YOLO 并提供模拟回退。
 
 车牌识别已经接入真实 `HyperLPR3`，用于中文车牌检测与识别。人脸识别已经接入 OpenCV Zoo 的 `YuNet + SFace`，用于人脸检测、特征提取和本地特征库候选比对。
 
@@ -27,6 +27,11 @@
 | 视频流接入 | RTSP/HTTP/本地视频文件 |
 | 默认抽帧分析 | 1 FPS，最高 5 FPS |
 | 默认并发流 | 2 路 |
+| 视频摘要 | 结构化时间线摘要，支持可选 Qwen 润色 |
+| 语音转写 | 外部 ASR 服务可选，未配置时模拟回退 |
+| 目标检测 | Ultralytics YOLO 可选扩展，未安装/未配置时模拟回退 |
+| 证据保护 | SHA-256 清单，默认 Fernet 加密存储 |
+| 后台同步 | 本地任务队列，支持 HTTP POST 推送 |
 
 ## 视觉算法来源
 
@@ -84,6 +89,16 @@ docker compose logs -f cerebellum
 
 当前模拟系统没有开启业务认证，端口默认只绑定本机。若要开放给手机或局域网设备访问，应增加认证、证书、反向代理访问控制或专用隔离网络。
 
+可选 API Key 鉴权：
+
+```bash
+export CEREBELLUM_API_KEY='change-this-key'
+docker compose up --build -d cerebellum
+curl http://127.0.0.1:8088/api/v1/device/status -H 'X-API-Key: change-this-key'
+```
+
+设置 `CEREBELLUM_API_KEY` 后，所有 `/api/v1/*` 接口都必须带 `X-API-Key`。`/health` 保持无鉴权，方便本机健康检查。
+
 ## 接口示例
 
 模拟媒体接入：
@@ -107,7 +122,7 @@ curl -X POST http://127.0.0.1:8088/api/v1/streams \
 ```bash
 curl -X POST http://127.0.0.1:8088/api/v1/streams \
   -H 'Content-Type: application/json' \
-  -d '{"stream_id":"sample-test","source_uri":"patrol.mp4","camera_id":"bodycam-01","sample_fps":1,"max_analyzed_frames":5}'
+  -d '{"stream_id":"sample-test","source_uri":"patrol.mp4","camera_id":"bodycam-01","sample_fps":1,"max_analyzed_frames":5,"analyze_object":true}'
 ```
 
 查询和停止视频流：
@@ -119,6 +134,22 @@ curl -X POST http://127.0.0.1:8088/api/v1/streams/sample-test/stop
 ```
 
 说明：当前流分析采用后台线程读取视频，按 `sample_fps` 抽样保存帧，再复用车牌识别和人脸识别接口。它适合验证单兵单路视频的边缘分析链路；真实设备上应把 RTSP 解码切到硬件编解码，并将抽帧、检测、特征比对拆成独立队列。
+
+生成视频结构化摘要：
+
+```bash
+curl -X POST http://127.0.0.1:8088/api/v1/video/summary \
+  -H 'Content-Type: application/json' \
+  -d '{"mission_id":"mission-20260514-001","stream_id":"sample-test","operator_note":"测试视频摘要","event_limit":100}'
+```
+
+默认返回结构化时间线摘要，速度快。需要调用本地 Qwen3.5-4B 润色时传 `use_llm:true`：
+
+```bash
+curl -X POST http://127.0.0.1:8088/api/v1/video/summary \
+  -H 'Content-Type: application/json' \
+  -d '{"mission_id":"mission-20260514-001","stream_id":"sample-test","use_llm":true,"max_tokens":600}'
+```
 
 模拟车牌识别：
 
@@ -162,6 +193,55 @@ curl -X POST http://127.0.0.1:8088/api/v1/analyze/face \
 curl -X POST http://127.0.0.1:8088/api/v1/face/enroll \
   -H 'Content-Type: application/json' \
   -d '{"person_id":"person-0001","display_name":"测试人员","image_uri":"your-face-image.jpg"}'
+```
+
+目标检测：
+
+```bash
+curl -X POST http://127.0.0.1:8088/api/v1/analyze/object \
+  -H 'Content-Type: application/json' \
+  -d '{"frame_id":"object-real-001","camera_id":"bodycam-01","image_uri":"your-scene-image.jpg","target_classes":["person","car","motorcycle"]}'
+```
+
+返回中的 `backend` 为 `ultralytics-yolo` 时，表示已走 YOLO；为 `simulated-fallback` 时表示真实模型不可用，系统回落为确定性模拟候选。当前默认镜像不安装 `ultralytics`，避免把完整 PyTorch/CUDA 依赖拉进 slim 原型镜像；Jetson 工程镜像应单独安装匹配硬件的 YOLO/TensorRT 运行时。
+
+语音转写：
+
+```bash
+curl -X POST http://127.0.0.1:8088/api/v1/asr/transcribe \
+  -H 'Content-Type: application/json' \
+  -d '{"mission_id":"mission-20260514-001","audio_uri":"patrol-audio.wav","operator_note":"现场口述记录"}'
+```
+
+如需接入真实 ASR 服务，可设置 `CEREBELLUM_ASR_BASE_URL`，接口会按 OpenAI 兼容 `/audio/transcriptions` 上传音频文件。
+
+登记证据文件：
+
+```bash
+curl -X POST http://127.0.0.1:8088/api/v1/evidence \
+  -H 'Content-Type: application/json' \
+  -d '{"mission_id":"mission-20260514-001","file_uri":"patrol-test.mp4","evidence_type":"video","note":"巡逻样本视频"}'
+curl http://127.0.0.1:8088/api/v1/evidence
+```
+
+默认会计算源文件 SHA-256，并把证据副本加密写入数据卷。首次加密会在数据卷中生成本机证据密钥；量产设备应改为 TPM 或安全芯片托管密钥。
+
+创建和执行同步任务：
+
+```bash
+curl -X POST http://127.0.0.1:8088/api/v1/sync/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{"mission_id":"mission-20260514-001","event_limit":100}'
+curl http://127.0.0.1:8088/api/v1/sync/tasks
+curl -X POST http://127.0.0.1:8088/api/v1/sync/tasks/sync-your-task-id/run
+```
+
+未配置 `destination_url` 或 `CEREBELLUM_SYNC_DESTINATION_URL` 时，任务会停留在 `offline_waiting`，用于弱网缓存验证。
+
+查看证书/双向 TLS 准备状态：
+
+```bash
+curl http://127.0.0.1:8088/api/v1/security/certificates
 ```
 
 调用 Qwen3.5-4B 报告生成：

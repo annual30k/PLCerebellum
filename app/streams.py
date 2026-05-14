@@ -8,7 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from app.models import FaceAnalyzeRequest, PlateAnalyzeRequest, StreamCreateRequest
+from app.models import FaceAnalyzeRequest, ObjectDetectRequest, PlateAnalyzeRequest, StreamCreateRequest
+from app.objects import detect_objects
 from app.services import analyze_face_image, analyze_plate_image
 from app.settings import Settings
 from app.state import DeviceState
@@ -65,6 +66,7 @@ class StreamSession:
     sample_fps: float
     analyze_plate: bool
     analyze_face: bool
+    analyze_object: bool
     max_runtime_seconds: int | None
     max_analyzed_frames: int | None
     save_sampled_frames: bool
@@ -80,6 +82,7 @@ class StreamSession:
     frames_analyzed: int = 0
     plate_candidates: int = 0
     face_candidates: int = 0
+    object_candidates: int = 0
 
     def __post_init__(self) -> None:
         self._stop_event = threading.Event()
@@ -107,6 +110,7 @@ class StreamSession:
                 "sample_fps": self.sample_fps,
                 "analyze_plate": self.analyze_plate,
                 "analyze_face": self.analyze_face,
+                "analyze_object": self.analyze_object,
                 "status": self.status,
                 "created_at": self.created_at,
                 "started_at": self.started_at,
@@ -117,6 +121,7 @@ class StreamSession:
                 "frames_analyzed": self.frames_analyzed,
                 "plate_candidates": self.plate_candidates,
                 "face_candidates": self.face_candidates,
+                "object_candidates": self.object_candidates,
             }
 
     def _set_status(self, status: str, error: str | None = None) -> None:
@@ -207,7 +212,9 @@ class StreamSession:
         finally:
             if capture is not None:
                 capture.release()
-            self.state.audit("stream.stop", self.snapshot())
+            snapshot = self.snapshot()
+            self.state.add_event("stream_session_closed", snapshot)
+            self.state.audit("stream.stop", snapshot)
 
     def _write_frame(self, cv2: object, frame: object, frame_id: str) -> str:
         frame_dir = self.settings.stream_frame_dir / self.stream_id
@@ -238,6 +245,7 @@ class StreamSession:
     def _analyze_frame(self, frame_id: str, frame_path: str) -> None:
         plate_count = 0
         face_count = 0
+        object_count = 0
         if self.analyze_plate:
             plate_result = analyze_plate_image(
                 PlateAnalyzeRequest(frame_id=frame_id, camera_id=self.camera_id, image_uri=frame_path),
@@ -254,11 +262,19 @@ class StreamSession:
             )
             face_count = int(face_result.get("face_count", 0))
             self.state.add_event("stream_face_candidate", {"stream_id": self.stream_id, **face_result})
+        if self.analyze_object:
+            object_result = detect_objects(
+                ObjectDetectRequest(frame_id=frame_id, camera_id=self.camera_id, image_uri=frame_path),
+                self.settings,
+            )
+            object_count = int(object_result.get("detection_count", 0))
+            self.state.add_event("stream_object_candidate", {"stream_id": self.stream_id, **object_result})
 
         with self._lock:
             self.frames_analyzed += 1
             self.plate_candidates += plate_count
             self.face_candidates += face_count
+            self.object_candidates += object_count
             self.last_frame_at = utc_now()
 
 
@@ -287,6 +303,7 @@ class StreamManager:
                 sample_fps=request.sample_fps,
                 analyze_plate=request.analyze_plate,
                 analyze_face=request.analyze_face,
+                analyze_object=request.analyze_object,
                 max_runtime_seconds=request.max_runtime_seconds,
                 max_analyzed_frames=request.max_analyzed_frames,
                 save_sampled_frames=request.save_sampled_frames,

@@ -24,7 +24,8 @@ models:
     plate: HyperLPR3
     face_detection: OpenCV Zoo YuNet
     face_recognition: OpenCV Zoo SFace
-    object: patrol-object-detector-sim
+    object: Ultralytics YOLO optional, simulated fallback
+  asr: external ASR optional, simulated fallback
 streams:
   protocols:
     - rtsp
@@ -34,6 +35,17 @@ streams:
   sample_fps_default: 1
   sample_fps_max: 5
   retained_frames_per_source: 120
+reports:
+  video_summary:
+    structured_summary_default: true
+    llm_polish_optional: true
+    human_confirmation_required: true
+evidence:
+  sha256_manifest: true
+  encrypt_by_default: true
+sync:
+  queue_enabled: true
+  retry_required_for_production: true
 linux_hardening:
   readonly_rootfs: true
   non_root_user: true
@@ -44,3 +56,4 @@ linux_hardening:
   secure_boot_required: true
   signed_ota_required: true
   model_signature_required: true
+  mtls_required_for_production: true
