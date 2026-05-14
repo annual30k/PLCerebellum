@@ -1,0 +1,54 @@
+name: patrol-cerebellum
+
+services:
+  cerebellum:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: patrol-cerebellum:dev
+    container_name: patrol-cerebellum
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      CEREBELLUM_DEVICE_ID: PL-CB-SIM-0001
+      CEREBELLUM_PROFILE: production-sim
+      CEREBELLUM_ACCELERATOR: jetson-orin-nx-16gb
+      CEREBELLUM_LLM_MODEL: Qwen3.5-4B-INT4
+      CEREBELLUM_LLM_FALLBACK_MODEL: Qwen3.5-2B-INT4
+      CEREBELLUM_LLM_BATCH_MODEL: Qwen3.5-9B-INT4
+      CEREBELLUM_CONTEXT_TOKENS: "16384"
+      CEREBELLUM_MAX_CONTEXT_TOKENS: "32768"
+      CEREBELLUM_STORAGE_GB: "1024"
+      CEREBELLUM_BATTERY_WH: "60"
+      CEREBELLUM_POWER_MODE: standard
+      CEREBELLUM_SECURE_BOOT: "true"
+      CEREBELLUM_READONLY_ROOTFS: "true"
+    ports:
+      - "8088:8088"
+    volumes:
+      - cerebellum-data:/var/lib/cerebellum
+      - cerebellum-logs:/var/log/cerebellum
+      - ./models:/opt/cerebellum/models:ro
+      - ./config/device.yaml:/etc/cerebellum/device.yaml:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,noexec,nosuid,nodev
+      - /run:size=64m,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 16g
+    cpus: 8
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8088/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  cerebellum-data:
+  cerebellum-logs:
+

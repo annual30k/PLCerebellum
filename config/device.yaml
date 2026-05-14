@@ -1,0 +1,37 @@
+device:
+  name: 单兵边缘智能小脑模拟器
+  form_factor: wearable_edge_server
+  profile: production-sim
+hardware:
+  target_platform: NVIDIA Jetson Orin NX 16GB
+  accelerator_tops: 157
+  cpu_cores: 8
+  memory_gb: 16
+  storage_gb: 1024
+  battery_wh: 60
+  power_modes:
+    - powersave
+    - standard
+    - performance
+    - charging_batch
+models:
+  llm_primary: Qwen3.5-4B-INT4
+  llm_fallback: Qwen3.5-2B-INT4
+  llm_batch: Qwen3.5-9B-INT4
+  context_tokens_default: 16384
+  context_tokens_max: 32768
+  vision:
+    plate: plate-detector-sim
+    face: face-candidate-sim
+    object: patrol-object-detector-sim
+linux_hardening:
+  readonly_rootfs: true
+  non_root_user: true
+  package_manager_disabled_in_runtime: true
+  ssh_enabled: false
+  usb_automount_enabled: false
+  desktop_environment: none
+  secure_boot_required: true
+  signed_ota_required: true
+  model_signature_required: true
+
