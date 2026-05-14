@@ -70,6 +70,7 @@ def analyze_face_image(request: FaceAnalyzeRequest, settings: Settings, state: D
     if request.image_uri:
         try:
             results = detect_faces(request.image_uri, settings)
+            candidate_count = sum(1 for face in results if face.get("candidate"))
             return {
                 "backend": "opencv-zoo-yunet+sface",
                 "frame_id": request.frame_id,
@@ -77,6 +78,7 @@ def analyze_face_image(request: FaceAnalyzeRequest, settings: Settings, state: D
                 "candidate_library": request.candidate_library,
                 "faces": results,
                 "face_count": len(results),
+                "candidate_count": candidate_count,
             }
         except (VisionUnavailable, FileNotFoundError, ValueError, RuntimeError) as exc:
             state.audit("vision.face.fallback", {"error": str(exc), "image_uri": request.image_uri})
@@ -87,6 +89,7 @@ def analyze_face_image(request: FaceAnalyzeRequest, settings: Settings, state: D
         "candidate_library": request.candidate_library,
         "faces": [simulate_face_candidate(request)],
         "face_count": 1,
+        "candidate_count": 1,
     }
 
 
@@ -114,6 +117,7 @@ def filter_video_events(events: list[dict], stream_id: str | None) -> list[dict]
         "stream_session_closed",
         "stream_plate_candidate",
         "stream_face_candidate",
+        "stream_face_alert",
         "stream_object_candidate",
         "plate_candidate",
         "face_candidate",
@@ -133,7 +137,7 @@ def filter_video_events(events: list[dict], stream_id: str | None) -> list[dict]
 
 def build_structured_video_summary(request: VideoSummaryRequest, events: list[dict], settings: Settings) -> dict:
     plate_events = [event for event in events if event.get("event_type") in {"stream_plate_candidate", "plate_candidate"}]
-    face_events = [event for event in events if event.get("event_type") in {"stream_face_candidate", "face_candidate"}]
+    face_events = [event for event in events if event.get("event_type") in {"stream_face_candidate", "stream_face_alert", "face_candidate"}]
     object_events = [event for event in events if event.get("event_type") in {"stream_object_candidate", "object_candidate"}]
     audio_events = [event for event in events if event.get("event_type") == "audio_transcribed"]
     stream_events = [
@@ -364,9 +368,16 @@ def compact_event_payload(event_type: str | None, payload: dict) -> dict:
         "stream_id",
         "frame_id",
         "camera_id",
+        "person_id",
+        "display_name",
+        "risk_level",
+        "category",
         "backend",
         "candidate_count",
         "face_count",
+        "vote_count",
+        "confirm_frames",
+        "average_similarity",
         "detection_count",
         "duration_seconds",
         "source",

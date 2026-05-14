@@ -2,15 +2,20 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from secrets import compare_digest
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from app.asr import local_asr_configured, transcribe_audio
 from app.evidence import list_evidence, register_evidence
+from app.face_sync import apply_face_library_bundle, face_library_status, sync_face_library_from_backend
+from app.face_sync_scheduler import FaceLibrarySyncScheduler
 from app.function_recognition import recognize_function
 from app.models import (
     AsrTranscribeRequest,
     EvidenceRegisterRequest,
+    FaceLibraryApplyRequest,
+    FaceLibrarySyncRequest,
     FaceEnrollRequest,
     FaceAnalyzeRequest,
     FunctionRecognizeRequest,
@@ -34,6 +39,7 @@ from app.vision import enroll_face
 settings = get_settings()
 state = DeviceState(settings.data_dir, settings.log_dir)
 streams = StreamManager(settings, state)
+face_library_sync_scheduler = FaceLibrarySyncScheduler(settings, state)
 
 
 @asynccontextmanager
@@ -42,7 +48,9 @@ async def lifespan(_: FastAPI):
     settings.log_dir.mkdir(parents=True, exist_ok=True)
     settings.stream_frame_dir.mkdir(parents=True, exist_ok=True)
     state.audit("device.boot", {"profile": settings.profile, "accelerator": settings.accelerator})
+    face_library_sync_scheduler.start()
     yield
+    face_library_sync_scheduler.stop()
     streams.stop_all()
     state.audit("device.shutdown", {"uptime_seconds": uptime_seconds()})
 
@@ -230,6 +238,30 @@ def enroll_face_candidate(request: FaceEnrollRequest) -> dict:
     result = enroll_face(request.person_id, request.image_uri, request.display_name, settings)
     event = state.add_event("face_enrolled", result)
     state.audit("vision.face.enroll", {"request": request.model_dump(), "result": result})
+    return {"result": result, "event": event}
+
+
+@app.get("/api/v1/face/library/status")
+def get_face_library_status() -> dict:
+    return face_library_status(settings)
+
+
+@app.post("/api/v1/face/library/apply")
+def apply_face_library(request: FaceLibraryApplyRequest) -> dict:
+    result = apply_face_library_bundle(request, settings)
+    event = state.add_event("face_library_synced", result)
+    state.audit("vision.face.library.apply", {"version": request.version, "result": result})
+    return {"result": result, "event": event}
+
+
+@app.post("/api/v1/face/library/sync")
+def sync_face_library(request: FaceLibrarySyncRequest) -> dict:
+    try:
+        result = sync_face_library_from_backend(request, settings)
+    except (httpx.HTTPError, KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    event = state.add_event("face_library_synced", result)
+    state.audit("vision.face.library.sync", {"request": request.model_dump(exclude={"token"}), "result": result})
     return {"result": result, "event": event}
 
 

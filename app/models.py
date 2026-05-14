@@ -53,6 +53,22 @@ class FaceEnrollRequest(BaseModel):
     display_name: str | None = None
 
 
+class FaceLibraryApplyRequest(BaseModel):
+    version: str = Field(..., examples=["face-lib-20260514-001"])
+    source: str = Field(default="PLBackend")
+    full_snapshot: bool = True
+    model: str = "opencv-zoo-yunet+sface"
+    persons: list[dict] = Field(default_factory=list)
+
+
+class FaceLibrarySyncRequest(BaseModel):
+    backend_url: str | None = None
+    token: str | None = None
+    device_id: str | None = None
+    current_version: str | None = None
+    force: bool = False
+
+
 class StreamCreateRequest(BaseModel):
     stream_id: str | None = Field(default=None, examples=["bodycam-01-main"])
     source_uri: str = Field(..., examples=["rtsp://192.168.50.10/live/main", "samples/patrol.mp4"])

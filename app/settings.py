@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     evidence_encrypt_by_default: bool = True
     evidence_key: str | None = None
     sync_destination_url: str | None = None
+    backend_base_url: str | None = None
+    backend_token: str | None = None
+    backend_alert_report_enabled: bool = True
+    face_library_auto_sync: bool = True
+    face_library_sync_interval_seconds: int = 300
+    face_match_confirm_frames: int = 3
+    face_match_window_seconds: int = 8
+    face_match_alert_cooldown_seconds: int = 30
     cert_file: Path | None = None
     key_file: Path | None = None
     ca_file: Path | None = None
@@ -59,6 +67,8 @@ class Settings(BaseSettings):
         "object_model_path",
         "evidence_key",
         "sync_destination_url",
+        "backend_base_url",
+        "backend_token",
         "cert_file",
         "key_file",
         "ca_file",

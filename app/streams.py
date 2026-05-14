@@ -3,11 +3,15 @@ from __future__ import annotations
 import re
 import threading
 import time
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+import httpx
+
+from app.backend_alerts import report_face_alert_to_backend
 from app.models import FaceAnalyzeRequest, ObjectDetectRequest, PlateAnalyzeRequest, StreamCreateRequest
 from app.objects import detect_objects
 from app.services import analyze_face_image, analyze_plate_image
@@ -82,12 +86,15 @@ class StreamSession:
     frames_analyzed: int = 0
     plate_candidates: int = 0
     face_candidates: int = 0
+    face_alerts: int = 0
     object_candidates: int = 0
 
     def __post_init__(self) -> None:
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
         self._thread = threading.Thread(target=self._run, name=f"stream-{self.stream_id}", daemon=True)
+        self._face_votes: dict[str, deque[tuple[float, str, float]]] = defaultdict(deque)
+        self._face_alerted_at: dict[str, float] = {}
 
     def start(self) -> None:
         self._thread.start()
@@ -121,6 +128,7 @@ class StreamSession:
                 "frames_analyzed": self.frames_analyzed,
                 "plate_candidates": self.plate_candidates,
                 "face_candidates": self.face_candidates,
+                "face_alerts": self.face_alerts,
                 "object_candidates": self.object_candidates,
             }
 
@@ -260,8 +268,9 @@ class StreamSession:
                 self.settings,
                 self.state,
             )
-            face_count = int(face_result.get("face_count", 0))
+            face_count = int(face_result.get("candidate_count", 0))
             self.state.add_event("stream_face_candidate", {"stream_id": self.stream_id, **face_result})
+            self._register_face_candidates(frame_id, face_result)
         if self.analyze_object:
             object_result = detect_objects(
                 ObjectDetectRequest(frame_id=frame_id, camera_id=self.camera_id, image_uri=frame_path),
@@ -276,6 +285,55 @@ class StreamSession:
             self.face_candidates += face_count
             self.object_candidates += object_count
             self.last_frame_at = utc_now()
+
+    def _register_face_candidates(self, frame_id: str, face_result: dict) -> None:
+        now = time.monotonic()
+        window_seconds = max(float(self.settings.face_match_window_seconds), 1.0)
+        confirm_frames = max(int(self.settings.face_match_confirm_frames), 1)
+        cooldown_seconds = max(float(self.settings.face_match_alert_cooldown_seconds), 1.0)
+        for face in face_result.get("faces", []) or []:
+            candidate = face.get("candidate") if isinstance(face, dict) else None
+            if not candidate:
+                continue
+            person_id = str(candidate.get("person_id") or candidate.get("candidate_id") or "").strip()
+            if not person_id:
+                continue
+            similarity = float(candidate.get("similarity") or 0.0)
+            votes = self._face_votes[person_id]
+            votes.append((now, frame_id, similarity))
+            while votes and now - votes[0][0] > window_seconds:
+                votes.popleft()
+            if len(votes) < confirm_frames:
+                continue
+            last_alert_at = self._face_alerted_at.get(person_id, 0.0)
+            if now - last_alert_at < cooldown_seconds:
+                continue
+            self._face_alerted_at[person_id] = now
+            average_similarity = round(sum(item[2] for item in votes) / len(votes), 4)
+            alert = {
+                "stream_id": self.stream_id,
+                "camera_id": self.camera_id,
+                "frame_id": frame_id,
+                "person_id": person_id,
+                "display_name": candidate.get("display_name"),
+                "risk_level": candidate.get("risk_level"),
+                "category": candidate.get("category"),
+                "vote_count": len(votes),
+                "confirm_frames": confirm_frames,
+                "window_seconds": window_seconds,
+                "average_similarity": average_similarity,
+                "occurred_at": utc_now(),
+                "result_type": "multi_frame_candidate_hint_only",
+                "requires_human_confirmation": True,
+            }
+            self.state.add_event("stream_face_alert", alert)
+            self.state.audit("vision.face.multi_frame_alert", alert)
+            try:
+                report_face_alert_to_backend(alert, self.settings)
+            except httpx.HTTPError as exc:
+                self.state.audit("vision.face.alert_report.failed", {"stream_id": self.stream_id, "person_id": person_id, "error": str(exc)})
+            with self._lock:
+                self.face_alerts += 1
 
 
 class StreamManager:

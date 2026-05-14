@@ -205,6 +205,26 @@ curl -X POST http://127.0.0.1:8088/api/v1/face/enroll \
   -d '{"person_id":"person-0001","display_name":"测试人员","image_uri":"your-face-image.jpg"}'
 ```
 
+查看和同步 PLBackend 下发的人脸库：
+
+```bash
+curl http://127.0.0.1:8088/api/v1/face/library/status
+
+curl -X POST http://127.0.0.1:8088/api/v1/face/library/apply \
+  -H 'Content-Type: application/json' \
+  -d '{"version":"face-lib-demo-001","source":"PLBackend","full_snapshot":true,"persons":[{"person_id":"CP-001","display_name":"李某某","risk_level":"HIGH","status":"ENABLED","embedding":[0.1,0.2,0.3]}]}'
+
+curl -X POST http://127.0.0.1:8088/api/v1/face/library/sync \
+  -H 'Content-Type: application/json' \
+  -d '{"backend_url":"http://127.0.0.1:8080","device_id":"PL-CB-SIM-0001","force":true}'
+```
+
+人脸库同步采用小脑主动拉取模式。PLBackend 返回版本包，小脑校验并后台构建本地特征库，构建完成后原子切换；失败时保留上一版可用库。版本包中如果带 `embedding`、`image_base64`、小脑可访问的本地图片或 `image_url`，会立即进入比对库；`image_url` 支持绝对地址，也支持在配置 `CEREBELLUM_BACKEND_BASE_URL` 后使用相对地址，带 `image_sha256` 时会校验照片完整性。无法下载或无法提取特征的人员会记录为 pending，等待下一轮同步重试或人工处理。
+
+配置 `CEREBELLUM_BACKEND_BASE_URL` 后，小脑启动会自动同步人脸库，并按 `CEREBELLUM_FACE_LIBRARY_SYNC_INTERVAL_SECONDS` 周期重试，默认 300 秒。实时流命中采用多帧确认，默认 `CEREBELLUM_FACE_MATCH_CONFIRM_FRAMES=3`、`CEREBELLUM_FACE_MATCH_WINDOW_SECONDS=8`，满足条件后产生 `stream_face_alert` 候选告警事件，仍需人工确认。
+
+如果配置了 `CEREBELLUM_BACKEND_TOKEN`，小脑同步人脸库、下载后端照片和上报 `stream_face_alert` 时都会携带 `Authorization: Bearer ...`。多帧确认告警会回传到 `POST /api/v1/cerebellum/face-alerts`，由 PLBackend 生成布控预警并推送到 Web。
+
 目标检测：
 
 ```bash

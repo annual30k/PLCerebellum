@@ -184,9 +184,11 @@ def match_face(embedding: np.ndarray, library: dict[str, dict]) -> dict | None:
             best = {
                 "person_id": person_id,
                 "display_name": record.get("display_name"),
+                "risk_level": record.get("risk_level"),
+                "category": record.get("category"),
                 "similarity": round(score, 4),
                 "threshold_note": "SFace cosine similarity; final identity requires human confirmation",
             }
     if best and best["similarity"] >= 0.36:
         return best
-    return best
+    return None
