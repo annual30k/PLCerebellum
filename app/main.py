@@ -1,28 +1,35 @@
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from app.models import (
+    FaceEnrollRequest,
     FaceAnalyzeRequest,
     MediaIngestRequest,
     PlateAnalyzeRequest,
     ReportRequest,
+    StreamCreateRequest,
 )
-from app.services import generate_report, simulate_face_candidate, simulate_plate_recognition
+from app.services import analyze_face_image, analyze_plate_image, generate_report
 from app.settings import get_settings, load_device_config
 from app.state import DeviceState
+from app.streams import StreamManager
+from app.vision import enroll_face
 
 settings = get_settings()
 state = DeviceState(settings.data_dir, settings.log_dir)
+streams = StreamManager(settings, state)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     settings.log_dir.mkdir(parents=True, exist_ok=True)
+    settings.stream_frame_dir.mkdir(parents=True, exist_ok=True)
     state.audit("device.boot", {"profile": settings.profile, "accelerator": settings.accelerator})
     yield
+    streams.stop_all()
     state.audit("device.shutdown", {"uptime_seconds": uptime_seconds()})
 
 
@@ -80,6 +87,11 @@ def device_status() -> dict:
             "ssh_enabled": False,
             "usb_automount_enabled": False,
         },
+        "streaming": {
+            "max_sources": settings.stream_max_sources,
+            "retained_frames_per_source": settings.stream_retained_frames_per_source,
+            "frame_dir": str(settings.stream_frame_dir),
+        },
     }
 
 
@@ -98,9 +110,49 @@ def ingest_media(request: MediaIngestRequest) -> dict:
     return {"accepted": True, "event": event}
 
 
+@app.post("/api/v1/streams")
+def create_stream(request: StreamCreateRequest) -> dict:
+    try:
+        stream = streams.create(request)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    event = state.add_event("stream_registered", stream)
+    state.audit("stream.register", {"request": request.model_dump(), "stream": stream})
+    return {"accepted": True, "stream": stream, "event": event}
+
+
+@app.get("/api/v1/streams")
+def list_streams() -> dict:
+    items = streams.list()
+    return {"count": len(items), "streams": items}
+
+
+@app.get("/api/v1/streams/{stream_id}")
+def get_stream(stream_id: str) -> dict:
+    try:
+        return {"stream": streams.get(stream_id)}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"stream not found: {stream_id}") from exc
+
+
+@app.post("/api/v1/streams/{stream_id}/stop")
+def stop_stream(stream_id: str) -> dict:
+    try:
+        stream = streams.stop(stream_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"stream not found: {stream_id}") from exc
+    event = state.add_event("stream_stopped", stream)
+    state.audit("stream.stop.request", {"stream_id": stream_id, "stream": stream})
+    return {"stream": stream, "event": event}
+
+
 @app.post("/api/v1/analyze/plate")
 def analyze_plate(request: PlateAnalyzeRequest) -> dict:
-    result = simulate_plate_recognition(request)
+    result = analyze_plate_image(request, settings, state)
     event = state.add_event("plate_candidate", result)
     state.audit("vision.plate", {"request": request.model_dump(), "result": result})
     return {"result": result, "event": event}
@@ -108,9 +160,17 @@ def analyze_plate(request: PlateAnalyzeRequest) -> dict:
 
 @app.post("/api/v1/analyze/face")
 def analyze_face(request: FaceAnalyzeRequest) -> dict:
-    result = simulate_face_candidate(request)
+    result = analyze_face_image(request, settings, state)
     event = state.add_event("face_candidate", result)
     state.audit("vision.face", {"request": request.model_dump(), "result": result})
+    return {"result": result, "event": event}
+
+
+@app.post("/api/v1/face/enroll")
+def enroll_face_candidate(request: FaceEnrollRequest) -> dict:
+    result = enroll_face(request.person_id, request.image_uri, request.display_name, settings)
+    event = state.add_event("face_enrolled", result)
+    state.audit("vision.face.enroll", {"request": request.model_dump(), "result": result})
     return {"result": result, "event": event}
 
 
@@ -124,13 +184,13 @@ def create_report(request: ReportRequest) -> dict:
 
 @app.get("/api/v1/events")
 def list_events() -> dict:
-    events = list(state.events)
+    events = state.event_snapshot()
     return {"count": len(events), "retention_limit": 1000, "events": events[-100:]}
 
 
 @app.get("/api/v1/audit")
 def list_audit() -> dict:
-    records = list(state.audit_log)
+    records = state.audit_snapshot()
     return {
         "count": len(records),
         "retention_limit": 1000,

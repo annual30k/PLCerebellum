@@ -21,9 +21,19 @@ models:
   context_tokens_default: 16384
   context_tokens_max: 32768
   vision:
-    plate: plate-detector-sim
-    face: face-candidate-sim
+    plate: HyperLPR3
+    face_detection: OpenCV Zoo YuNet
+    face_recognition: OpenCV Zoo SFace
     object: patrol-object-detector-sim
+streams:
+  protocols:
+    - rtsp
+    - http
+    - local_video_file
+  max_sources_default: 2
+  sample_fps_default: 1
+  sample_fps_max: 5
+  retained_frames_per_source: 120
 linux_hardening:
   readonly_rootfs: true
   non_root_user: true
@@ -34,4 +44,3 @@ linux_hardening:
   secure_boot_required: true
   signed_ota_required: true
   model_signature_required: true
-

@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from collections import deque
 from pathlib import Path
+from threading import RLock
 from uuid import uuid4
 
 from app.models import AuditRecord
@@ -17,6 +18,7 @@ class DeviceState:
         self.log_dir = log_dir
         self.events: deque[dict] = deque(maxlen=MAX_EVENTS)
         self.audit_log: deque[AuditRecord] = deque(maxlen=MAX_AUDIT_RECORDS)
+        self._lock = RLock()
         self.temperature_c = 46.0
         self.battery_percent = 92
         self.storage_used_gb = 18.5
@@ -29,7 +31,8 @@ class DeviceState:
             "payload": payload,
             "human_status": "unconfirmed",
         }
-        self.events.append(event)
+        with self._lock:
+            self.events.append(event)
         return event
 
     def audit(self, action: str, detail: dict, actor: str = "system") -> AuditRecord:
@@ -39,9 +42,28 @@ class DeviceState:
             actor=actor,
             detail=detail,
         )
-        self.audit_log.append(record)
-        self._append_audit_file(record)
+        with self._lock:
+            self.audit_log.append(record)
+            self._append_audit_file(record)
         return record
+
+    def event_count(self) -> int:
+        with self._lock:
+            return len(self.events)
+
+    def event_snapshot(self, limit: int | None = None) -> list[dict]:
+        with self._lock:
+            events = list(self.events)
+        if limit is None:
+            return events
+        return events[-limit:]
+
+    def audit_snapshot(self, limit: int | None = None) -> list[AuditRecord]:
+        with self._lock:
+            records = list(self.audit_log)
+        if limit is None:
+            return records
+        return records[-limit:]
 
     def _append_audit_file(self, record: AuditRecord) -> None:
         self.log_dir.mkdir(parents=True, exist_ok=True)

@@ -40,6 +40,7 @@ services:
     restart: unless-stopped
     environment:
       TZ: Asia/Shanghai
+      HOME: /var/lib/cerebellum
       CEREBELLUM_DEVICE_ID: PL-CB-SIM-0001
       CEREBELLUM_PROFILE: production-sim
       CEREBELLUM_ACCELERATOR: jetson-orin-nx-16gb
@@ -63,6 +64,7 @@ services:
       - cerebellum-data:/var/lib/cerebellum
       - cerebellum-logs:/var/log/cerebellum
       - ./models:/opt/cerebellum/models:ro
+      - ./samples:/var/lib/cerebellum/samples:ro
       - ./config/device.yaml:/etc/cerebellum/device.yaml:ro
     read_only: true
     tmpfs:

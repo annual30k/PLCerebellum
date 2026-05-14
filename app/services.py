@@ -6,6 +6,7 @@ import httpx
 from app.models import FaceAnalyzeRequest, PlateAnalyzeRequest, ReportRequest
 from app.settings import Settings
 from app.state import DeviceState
+from app.vision import VisionUnavailable, detect_faces, recognize_plate
 
 
 def choose_llm_model(request: ReportRequest, settings: Settings, state: DeviceState) -> str:
@@ -43,6 +44,52 @@ def simulate_face_candidate(request: FaceAnalyzeRequest) -> dict:
     }
 
 
+def analyze_plate_image(request: PlateAnalyzeRequest, settings: Settings, state: DeviceState) -> dict:
+    if request.image_uri:
+        try:
+            results = recognize_plate(request.image_uri, settings)
+            return {
+                "backend": "hyperlpr3",
+                "frame_id": request.frame_id,
+                "camera_id": request.camera_id,
+                "candidates": results,
+                "candidate_count": len(results),
+            }
+        except (VisionUnavailable, FileNotFoundError, ValueError, RuntimeError) as exc:
+            state.audit("vision.plate.fallback", {"error": str(exc), "image_uri": request.image_uri})
+    return {
+        "backend": "simulated-fallback",
+        "frame_id": request.frame_id,
+        "camera_id": request.camera_id,
+        "candidates": [simulate_plate_recognition(request)],
+        "candidate_count": 1,
+    }
+
+
+def analyze_face_image(request: FaceAnalyzeRequest, settings: Settings, state: DeviceState) -> dict:
+    if request.image_uri:
+        try:
+            results = detect_faces(request.image_uri, settings)
+            return {
+                "backend": "opencv-zoo-yunet+sface",
+                "frame_id": request.frame_id,
+                "camera_id": request.camera_id,
+                "candidate_library": request.candidate_library,
+                "faces": results,
+                "face_count": len(results),
+            }
+        except (VisionUnavailable, FileNotFoundError, ValueError, RuntimeError) as exc:
+            state.audit("vision.face.fallback", {"error": str(exc), "image_uri": request.image_uri})
+    return {
+        "backend": "simulated-fallback",
+        "frame_id": request.frame_id,
+        "camera_id": request.camera_id,
+        "candidate_library": request.candidate_library,
+        "faces": [simulate_face_candidate(request)],
+        "face_count": 1,
+    }
+
+
 def generate_report(request: ReportRequest, settings: Settings, state: DeviceState) -> dict:
     model = choose_llm_model(request, settings, state)
     if settings.llm_base_url and model == settings.llm_model:
@@ -51,7 +98,7 @@ def generate_report(request: ReportRequest, settings: Settings, state: DeviceSta
         except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
             state.audit("llm.report.fallback", {"model": model, "error": str(exc)})
 
-    event_count = len(state.events)
+    event_count = state.event_count()
     now = datetime.now(timezone.utc).isoformat()
     title_map = {
         "daily": "单兵巡逻日报",
@@ -85,8 +132,8 @@ def generate_report_with_llama_cpp(
     state: DeviceState,
     model: str,
 ) -> dict:
-    event_count = len(state.events)
-    recent_events = list(state.events)[-20:]
+    event_count = state.event_count()
+    recent_events = state.event_snapshot(limit=20)
     system_prompt = (
         "你是部署在单兵边缘智能小脑服务器中的警务报告助手。"
         "你只能根据输入的结构化事件、人工备注和设备状态生成报告草稿。"

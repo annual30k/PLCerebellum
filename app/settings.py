@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     data_dir: Path = Path("/var/lib/cerebellum")
     log_dir: Path = Path("/var/log/cerebellum")
     model_dir: Path = Path("/opt/cerebellum/models")
+    sample_dir: Path = Path("/var/lib/cerebellum/samples")
+    stream_frame_dir: Path = Path("/var/lib/cerebellum/stream_frames")
+    stream_max_sources: int = 2
+    stream_retained_frames_per_source: int = 120
 
 
 @lru_cache
