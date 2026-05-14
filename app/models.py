@@ -11,6 +11,13 @@ class MediaIngestRequest(BaseModel):
     note: str | None = None
 
 
+class FunctionRecognizeRequest(BaseModel):
+    text: str = Field(..., examples=["帮我分析这段视频并生成摘要"])
+    media_type: Literal["image", "video", "audio", "stream", "text", "unknown"] = "unknown"
+    context: dict = Field(default_factory=dict)
+    candidate_functions: list[str] | None = None
+
+
 class PlateAnalyzeRequest(BaseModel):
     frame_id: str = Field(..., examples=["frame-20260514-001"])
     camera_id: str = Field(default="bodycam-01")

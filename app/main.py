@@ -7,11 +7,13 @@ from fastapi.responses import JSONResponse
 
 from app.asr import local_asr_configured, transcribe_audio
 from app.evidence import list_evidence, register_evidence
+from app.function_recognition import recognize_function
 from app.models import (
     AsrTranscribeRequest,
     EvidenceRegisterRequest,
     FaceEnrollRequest,
     FaceAnalyzeRequest,
+    FunctionRecognizeRequest,
     MediaIngestRequest,
     ObjectDetectRequest,
     PlateAnalyzeRequest,
@@ -136,6 +138,14 @@ def ingest_media(request: MediaIngestRequest) -> dict:
     )
     state.audit("media.ingest", event)
     return {"accepted": True, "event": event}
+
+
+@app.post("/api/v1/functions/recognize")
+def recognize_cerebellum_function(request: FunctionRecognizeRequest) -> dict:
+    result = recognize_function(request)
+    event = state.add_event("function_recognized", result)
+    state.audit("function.recognize", {"request": request.model_dump(), "result": result})
+    return {"result": result, "event": event}
 
 
 @app.post("/api/v1/streams")

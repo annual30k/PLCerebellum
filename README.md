@@ -109,6 +109,16 @@ curl -X POST http://127.0.0.1:8088/api/v1/media/ingest \
   -d '{"source":"bodycam-rtsp-01","media_type":"stream","duration_seconds":60,"note":"巡逻视频流"}'
 ```
 
+功能识别/指令分类：
+
+```bash
+curl -X POST http://127.0.0.1:8088/api/v1/functions/recognize \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"帮我分析 sample-test 的视频摘要并生成日报","media_type":"video","context":{"mission_id":"mission-20260514-001","stream_id":"sample-test"}}'
+```
+
+该接口用于手机端或语音文本的近端任务路由，默认采用离线关键词规则，返回推荐功能、接口路径、置信度、缺失参数和建议请求载荷。它不依赖大模型，避免实时巡逻阶段因为本地 LLM 慢速推理阻塞操作。
+
 注册实时视频流或本地视频文件抽帧分析：
 
 ```bash

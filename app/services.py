@@ -288,8 +288,9 @@ def generate_report_with_llama_cpp(
     state: DeviceState,
     model: str,
 ) -> dict:
-    event_count = state.event_count()
-    recent_events = state.event_snapshot(limit=20)
+    report_events = compact_events_for_llm(state.event_snapshot(limit=1000), limit=1000)
+    event_count = len(report_events)
+    recent_events = report_events[-20:]
     system_prompt = (
         "你是部署在单兵边缘智能小脑服务器中的警务报告助手。"
         "你只能根据输入的结构化事件、人工备注和设备状态生成报告草稿。"
@@ -335,3 +336,69 @@ def generate_report_with_llama_cpp(
         "requires_human_confirmation": True,
         "backend": "llama.cpp",
     }
+
+
+def compact_events_for_llm(events: list[dict], limit: int = 20) -> list[dict]:
+    compacted = []
+    for event in reversed(events):
+        event_type = event.get("event_type")
+        if event_type in {"function_recognized", "report_generated"}:
+            continue
+        payload = compact_event_payload(event_type, event.get("payload", {}) or {})
+        compacted.append(
+            {
+                "event_type": event_type,
+                "created_at": event.get("created_at"),
+                "payload": payload,
+                "human_status": event.get("human_status"),
+            }
+        )
+        if len(compacted) >= limit:
+            break
+    return list(reversed(compacted))
+
+
+def compact_event_payload(event_type: str | None, payload: dict) -> dict:
+    fields = (
+        "mission_id",
+        "stream_id",
+        "frame_id",
+        "camera_id",
+        "backend",
+        "candidate_count",
+        "face_count",
+        "detection_count",
+        "duration_seconds",
+        "source",
+        "media_type",
+        "status",
+        "source_uri",
+        "audio_uri",
+        "evidence_id",
+        "evidence_type",
+        "chain_status",
+    )
+    compacted = {field: payload[field] for field in fields if field in payload}
+    if event_type in {"plate_candidate", "stream_plate_candidate"}:
+        compacted["plates"] = [
+            candidate.get("plate_number")
+            for candidate in payload.get("candidates", [])[:5]
+            if candidate.get("plate_number")
+        ]
+    if event_type in {"face_candidate", "stream_face_candidate"}:
+        compacted["face_candidates"] = [
+            face.get("candidate")
+            for face in payload.get("faces", [])[:5]
+            if face.get("candidate")
+        ]
+    if event_type in {"object_candidate", "stream_object_candidate"}:
+        compacted["objects"] = [
+            detection.get("label")
+            for detection in payload.get("detections", [])[:8]
+            if detection.get("label")
+        ]
+    if event_type == "audio_transcribed" and payload.get("transcript"):
+        compacted["transcript_preview"] = str(payload["transcript"])[:300]
+    if event_type == "video_summary_generated" and payload.get("content"):
+        compacted["summary_preview"] = str(payload["content"])[:300]
+    return compacted
