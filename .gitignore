@@ -12,6 +12,9 @@ venv/
 data/
 logs/
 models/
+tools/asr/bin/
+tools/asr/sherpa-onnx/
+tools/asr/sherpa-onnx-*/
 
 *.mp4
 *.mov

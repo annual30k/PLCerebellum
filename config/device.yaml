@@ -25,7 +25,7 @@ models:
     face_detection: OpenCV Zoo YuNet
     face_recognition: OpenCV Zoo SFace
     object: Ultralytics YOLO optional, simulated fallback
-  asr: external ASR optional, simulated fallback
+  asr: whisper.cpp local optional, external ASR optional, simulated fallback
 streams:
   protocols:
     - rtsp

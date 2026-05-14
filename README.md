@@ -2,7 +2,7 @@
 
 该目录用于模拟“单兵边缘智能小脑服务器”的量产运行环境。它不是完整 AI 算法镜像，而是一个贴近目标硬件和系统裁剪策略的可运行原型，用于验证设备状态、视频接入、车牌/人脸候选、报告生成、审计日志和系统加固策略。
 
-当前版本已经接入真实 `Qwen3.5-4B Q4_K_M GGUF` 本地模型，通过 llama.cpp server 提供 OpenAI 兼容接口。车牌识别和人脸检测/特征提取也已经接入真实开源算法；视频流接入已经支持 RTSP/HTTP/本地视频文件的后台抽帧分析。视频摘要、ASR、目标检测、证据保护和后台同步已经具备 MVP API，其中 ASR 支持外部服务接入并提供模拟回退，目标检测支持可选 Ultralytics YOLO 并提供模拟回退。
+当前版本已经接入真实 `Qwen3.5-4B Q4_K_M GGUF` 本地模型，通过 llama.cpp server 提供 OpenAI 兼容接口。车牌识别和人脸检测/特征提取也已经接入真实开源算法；视频流接入已经支持 RTSP/HTTP/本地视频文件的后台抽帧分析。视频摘要、ASR、目标检测、证据保护和后台同步已经具备 MVP API，其中 ASR 默认使用本地 `sherpa-onnx + SenseVoice int8`，并支持外部 ASR 服务和模拟回退，目标检测支持可选 Ultralytics YOLO 并提供模拟回退。
 
 车牌识别已经接入真实 `HyperLPR3`，用于中文车牌检测与识别。人脸识别已经接入 OpenCV Zoo 的 `YuNet + SFace`，用于人脸检测、特征提取和本地特征库候选比对。
 
@@ -28,7 +28,7 @@
 | 默认抽帧分析 | 1 FPS，最高 5 FPS |
 | 默认并发流 | 2 路 |
 | 视频摘要 | 结构化时间线摘要，支持可选 Qwen 润色 |
-| 语音转写 | 外部 ASR 服务可选，未配置时模拟回退 |
+| 语音转写 | 本地 sherpa-onnx SenseVoice int8 默认，外部 ASR 服务可选 |
 | 目标检测 | Ultralytics YOLO 可选扩展，未安装/未配置时模拟回退 |
 | 证据保护 | SHA-256 清单，默认 Fernet 加密存储 |
 | 后台同步 | 本地任务队列，支持 HTTP POST 推送 |
@@ -213,7 +213,23 @@ curl -X POST http://127.0.0.1:8088/api/v1/asr/transcribe \
   -d '{"mission_id":"mission-20260514-001","audio_uri":"patrol-audio.wav","operator_note":"现场口述记录"}'
 ```
 
-如需接入真实 ASR 服务，可设置 `CEREBELLUM_ASR_BASE_URL`，接口会按 OpenAI 兼容 `/audio/transcriptions` 上传音频文件。
+ASR 默认策略为：本地 `sherpa-onnx + SenseVoice int8` 优先，外部 ASR 服务其次，最后模拟回退。
+
+本地 SenseVoice int8 方式：
+
+```bash
+./tools/asr/setup_sherpa_onnx_sensevoice.sh
+export CEREBELLUM_ASR_BACKEND=sherpa-onnx-sensevoice
+export CEREBELLUM_ASR_LOCAL_BINARY=/opt/cerebellum/bin/sherpa-onnx-offline
+export CEREBELLUM_ASR_MODEL_PATH=/opt/cerebellum/models/asr/sensevoice-int8/model.int8.onnx
+export CEREBELLUM_ASR_TOKENS_PATH=/opt/cerebellum/models/asr/sensevoice-int8/tokens.txt
+export CEREBELLUM_ASR_THREADS=4
+docker compose up --build -d cerebellum
+```
+
+当前默认 compose 会把 `tools/asr/bin` 挂载到 `/opt/cerebellum/bin`，把 `models` 挂载到 `/opt/cerebellum/models`。接口会先用 `ffmpeg` 把输入音视频转成 16kHz 单声道 WAV，再调用本地 ASR。
+
+如需接入外部真实 ASR 服务，可设置 `CEREBELLUM_ASR_BASE_URL`，接口会按 OpenAI 兼容 `/audio/transcriptions` 上传音频文件。
 
 登记证据文件：
 

@@ -34,7 +34,13 @@ class Settings(BaseSettings):
     stream_retained_frames_per_source: int = 120
     api_key: str | None = None
     asr_model: str = "edge-asr-sim"
+    asr_backend: str = "auto"
     asr_base_url: str | None = None
+    asr_local_binary: str | None = None
+    asr_model_path: Path | None = None
+    asr_tokens_path: Path | None = None
+    asr_timeout_seconds: float = 180.0
+    asr_threads: int = 4
     object_model: str = "yolov8n.pt"
     object_model_path: Path | None = None
     evidence_encrypt_by_default: bool = True
@@ -47,6 +53,9 @@ class Settings(BaseSettings):
 
     @field_validator(
         "asr_base_url",
+        "asr_local_binary",
+        "asr_model_path",
+        "asr_tokens_path",
         "object_model_path",
         "evidence_key",
         "sync_destination_url",

@@ -5,7 +5,7 @@ from secrets import compare_digest
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from app.asr import transcribe_audio
+from app.asr import local_asr_configured, transcribe_audio
 from app.evidence import list_evidence, register_evidence
 from app.models import (
     AsrTranscribeRequest,
@@ -100,6 +100,8 @@ def device_status() -> dict:
             "fallback": settings.llm_fallback_model,
             "batch": settings.llm_batch_model,
             "asr": settings.asr_model,
+            "asr_backend": settings.asr_backend,
+            "asr_local_configured": local_asr_configured(settings),
             "object": settings.object_model,
             "context_tokens": settings.context_tokens,
             "max_context_tokens": settings.max_context_tokens,
