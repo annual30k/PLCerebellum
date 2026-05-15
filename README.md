@@ -223,7 +223,7 @@ curl -X POST http://127.0.0.1:8088/api/v1/face/library/sync \
 
 配置 `CEREBELLUM_BACKEND_BASE_URL` 后，小脑启动会自动同步人脸库，并按 `CEREBELLUM_FACE_LIBRARY_SYNC_INTERVAL_SECONDS` 周期重试，默认 300 秒。实时流命中采用多帧确认，默认 `CEREBELLUM_FACE_MATCH_CONFIRM_FRAMES=3`、`CEREBELLUM_FACE_MATCH_WINDOW_SECONDS=8`，满足条件后产生 `stream_face_alert` 候选告警事件，仍需人工确认。
 
-如果配置了 `CEREBELLUM_BACKEND_TOKEN`，小脑同步人脸库、下载后端照片和上报 `stream_face_alert` 时都会携带 `Authorization: Bearer ...`。多帧确认告警会回传到 `POST /api/v1/cerebellum/face-alerts`，由 PLBackend 生成布控预警并推送到 Web。
+小脑同步人脸库、下载后端照片和上报 `stream_face_alert` 时都会携带 `CEREBELLUM_BACKEND_TOKEN`，请求头为 `Authorization: Bearer ...`。PLBackend 侧必须配置相同的 `PATROL_CEREBELLUM_TOKEN`，否则 `/api/v1/cerebellum/*` 和 `/files/{fileId}/download` 不会放行小脑请求。多帧确认告警会回传到 `POST /api/v1/cerebellum/face-alerts`，由 PLBackend 生成布控预警并推送到 Web。
 
 目标检测：
 
