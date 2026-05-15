@@ -10,11 +10,11 @@ services:
       HF_HOME: /models/.cache/huggingface
     command:
       - --hf-repo
-      - jc-builds/Qwen3.5-4B-Q4_K_M-GGUF
+      - unsloth/gemma-4-E4B-it-GGUF
       - --hf-file
-      - Qwen3.5-4B-Q4_K_M.gguf
+      - gemma-4-E4B-it-UD-Q4_K_XL.gguf
       - --alias
-      - Qwen3.5-4B-INT4
+      - gemma4:e4b
       - --host
       - 0.0.0.0
       - --port
@@ -23,6 +23,8 @@ services:
       - "16384"
       - -ngl
       - "99"
+      - --reasoning
+      - "off"
     ports:
       - "127.0.0.1:8089:8080"
     volumes:
@@ -45,9 +47,9 @@ services:
       CEREBELLUM_DEVICE_ID: PL-CB-SIM-0001
       CEREBELLUM_PROFILE: production-sim
       CEREBELLUM_ACCELERATOR: jetson-orin-nx-16gb
-      CEREBELLUM_LLM_MODEL: Qwen3.5-4B-INT4
-      CEREBELLUM_LLM_FALLBACK_MODEL: Qwen3.5-2B-INT4
-      CEREBELLUM_LLM_BATCH_MODEL: Qwen3.5-9B-INT4
+      CEREBELLUM_LLM_MODEL: gemma4:e4b
+      CEREBELLUM_LLM_FALLBACK_MODEL: gemma4:e4b
+      CEREBELLUM_LLM_BATCH_MODEL: gemma4:e4b
       CEREBELLUM_CONTEXT_TOKENS: "16384"
       CEREBELLUM_MAX_CONTEXT_TOKENS: "32768"
       CEREBELLUM_STORAGE_GB: "1024"

@@ -15,9 +15,9 @@ hardware:
     - performance
     - charging_batch
 models:
-  llm_primary: Qwen3.5-4B-INT4
-  llm_fallback: Qwen3.5-2B-INT4
-  llm_batch: Qwen3.5-9B-INT4
+  llm_primary: gemma4:e4b
+  llm_fallback: gemma4:e4b
+  llm_batch: gemma4:e4b
   context_tokens_default: 16384
   context_tokens_max: 32768
   vision:

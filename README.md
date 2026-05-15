@@ -2,7 +2,7 @@
 
 该目录用于模拟“单兵边缘智能小脑服务器”的量产运行环境。它不是完整 AI 算法镜像，而是一个贴近目标硬件和系统裁剪策略的可运行原型，用于验证设备状态、视频接入、车牌/人脸候选、报告生成、审计日志和系统加固策略。
 
-当前版本已经接入真实 `Qwen3.5-4B Q4_K_M GGUF` 本地模型，通过 llama.cpp server 提供 OpenAI 兼容接口。车牌识别和人脸检测/特征提取也已经接入真实开源算法；视频流接入已经支持 RTSP/HTTP/本地视频文件的后台抽帧分析。视频摘要、ASR、目标检测、证据保护和后台同步已经具备 MVP API，其中 ASR 默认使用本地 `sherpa-onnx + SenseVoice int8`，并支持外部 ASR 服务和模拟回退，目标检测支持可选 Ultralytics YOLO 并提供模拟回退。
+当前版本已经接入真实 `gemma4:e4b` 本地模型，通过 llama.cpp server 提供 OpenAI 兼容接口。车牌识别和人脸检测/特征提取也已经接入真实开源算法；视频流接入已经支持 RTSP/HTTP/本地视频文件的后台抽帧分析。视频摘要、ASR、目标检测、证据保护和后台同步已经具备 MVP API，其中 ASR 默认使用本地 `sherpa-onnx + SenseVoice int8`，并支持外部 ASR 服务和模拟回退，目标检测支持可选 Ultralytics YOLO 并提供模拟回退。
 
 车牌识别已经接入真实 `HyperLPR3`，用于中文车牌检测与识别。人脸识别已经接入 OpenCV Zoo 的 `YuNet + SFace`，用于人脸检测、特征提取和本地特征库候选比对。
 
@@ -16,9 +16,9 @@
 | 容器内存限制 | 16GB |
 | 存储画像 | 1TB NVMe |
 | 电池画像 | 60Wh |
-| 主力大模型 | Qwen3.5-4B-INT4 |
-| 备用模型 | Qwen3.5-2B-INT4 |
-| 批处理模型 | Qwen3.5-9B-INT4 |
+| 主力大模型 | gemma4:e4b |
+| 备用模型 | gemma4:e4b |
+| 批处理模型 | gemma4:e4b |
 | 默认上下文 | 16K tokens |
 | 最大上下文 | 32K tokens |
 | 车牌识别 | HyperLPR3 |
@@ -27,11 +27,13 @@
 | 视频流接入 | RTSP/HTTP/本地视频文件 |
 | 默认抽帧分析 | 1 FPS，最高 5 FPS |
 | 默认并发流 | 2 路 |
-| 视频摘要 | 结构化时间线摘要，支持可选 Qwen 润色 |
+| 视频摘要 | 结构化时间线摘要，支持可选 Gemma 4 E4B 润色 |
 | 语音转写 | 本地 sherpa-onnx SenseVoice int8 默认，外部 ASR 服务可选 |
 | 目标检测 | Ultralytics YOLO 可选扩展，未安装/未配置时模拟回退 |
 | 证据保护 | SHA-256 清单，默认 Fernet 加密存储 |
 | 后台同步 | 本地任务队列，支持 HTTP POST 推送 |
+
+多文件报告生成采用分层摘要策略：小脑先对每个视频、录音、图片形成单文件结构化摘要，再按上下文预算生成总报告输入包。默认 16K 上下文下会优先保留每个附件的证据编号、文件名、哈希、分析状态和摘要内容，超出预算时截断单项摘要并记录省略数量，避免把多份长转写或多段视频分析全文一次性塞进模型。
 
 ## 视觉算法来源
 
@@ -68,7 +70,7 @@ cd /Users/qiuqiquan/Desktop/SmartHeadsetSystem/PatrolLink/PLCerebellum
 docker compose up --build -d
 ```
 
-首次启动会拉取 llama.cpp server 镜像，并由 llama.cpp 从 Hugging Face 加载 `jc-builds/Qwen3.5-4B-Q4_K_M-GGUF:Q4_K_M`。模型文件约 2.6GB，实际占用会落在 `models/.cache` 下。
+首次启动会拉取 llama.cpp server 镜像，并由 llama.cpp 从 Hugging Face 加载 `unsloth/gemma-4-E4B-it-GGUF` 的 `gemma-4-E4B-it-UD-Q4_K_XL.gguf`。模型文件约 5GB，实际占用会落在 `models/.cache` 下。
 
 当前桌面 Docker 环境使用 CPU 推理，速度明显慢于目标 Jetson Orin NX GPU/CUDA 环境。真实设备上应换成 Jetson/CUDA 版 llama.cpp 或 TensorRT-LLM 后端。
 
@@ -80,6 +82,18 @@ curl http://127.0.0.1:8088/health
 curl http://127.0.0.1:8088/api/v1/device/status
 curl http://127.0.0.1:8089/health
 ```
+
+确认 Gemma 4 E4B 试跑：
+
+```bash
+docker compose up --build -d
+curl http://127.0.0.1:8089/v1/models
+curl -X POST http://127.0.0.1:8088/api/v1/llm/report \
+  -H 'Content-Type: application/json' \
+  -d '{"mission_id":"mission-gemma4-test","report_type":"daily","operator_note":"测试 Gemma 4 E4B 生成巡逻日报"}'
+```
+
+当前 Gemma 配置使用 `unsloth/gemma-4-E4B-it-GGUF` 的 `UD-Q4_K_XL` GGUF。小脑默认上下文设为 16K，用于多文件提取摘要和报告汇总；真实 16GB Jetson Orin NX 设备上可在稳定性验证后再评估 24K 或 32K。
 
 查看日志：
 
@@ -153,7 +167,7 @@ curl -X POST http://127.0.0.1:8088/api/v1/video/summary \
   -d '{"mission_id":"mission-20260514-001","stream_id":"sample-test","operator_note":"测试视频摘要","event_limit":100}'
 ```
 
-默认返回结构化时间线摘要，速度快。需要调用本地 Qwen3.5-4B 润色时传 `use_llm:true`：
+默认返回结构化时间线摘要，速度快。需要调用本地 Gemma 4 E4B 润色时传 `use_llm:true`：
 
 ```bash
 curl -X POST http://127.0.0.1:8088/api/v1/video/summary \
@@ -290,7 +304,7 @@ curl -X POST http://127.0.0.1:8088/api/v1/sync/tasks/sync-your-task-id/run
 curl http://127.0.0.1:8088/api/v1/security/certificates
 ```
 
-调用 Qwen3.5-4B 报告生成：
+调用 Gemma 4 E4B 报告生成：
 
 ```bash
 curl -X POST http://127.0.0.1:8088/api/v1/llm/report \
@@ -307,13 +321,13 @@ curl http://127.0.0.1:8088/api/v1/audit
 
 ## 替换真实模型
 
-真实部署时，将量化后的 Qwen3.5-4B 模型或 llama.cpp 下载缓存挂载到：
+真实部署时，将量化后的 Gemma 4 E4B 模型或 llama.cpp 下载缓存挂载到：
 
 ```text
 /opt/cerebellum/models
 ```
 
-当前版本已经通过 llama.cpp server 接入真实 Qwen3.5-4B Q4_K_M GGUF。若 llama.cpp 服务不可用，`report-service` 会自动回落到模拟文本，并在审计日志中记录 `llm.report.fallback`。
+当前版本已经通过 llama.cpp server 接入真实 Gemma 4 E4B UD-Q4_K_XL GGUF。若 llama.cpp 服务不可用，`report-service` 会自动回落到模拟文本，并在审计日志中记录 `llm.report.fallback`。
 
 可用以下接口确认模型是否加载成功：
 
@@ -321,4 +335,4 @@ curl http://127.0.0.1:8088/api/v1/audit
 curl http://127.0.0.1:8089/v1/models
 ```
 
-报告接口返回中的 `backend` 为 `llama.cpp` 时，表示已经使用真实本地 Qwen3.5-4B 模型；如果为 `simulated-fallback`，表示模型服务不可用或请求超时，系统回落到了模拟报告。
+报告接口返回中的 `backend` 为 `llama.cpp` 时，表示已经使用真实本地 Gemma 4 E4B 模型；如果为 `simulated-fallback`，表示模型服务不可用或请求超时，系统回落到了模拟报告。

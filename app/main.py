@@ -33,6 +33,7 @@ from app.models import (
     VideoSummaryRequest,
 )
 from app.objects import detect_objects
+from app.report_document import REPORT_DOCX_CONTENT_TYPE, reports_dir, safe_report_id
 from app.security import certificate_status
 from app.services import analyze_face_image, analyze_plate_image, generate_report, summarize_video
 from app.settings import get_settings, load_device_config
@@ -384,6 +385,16 @@ def create_report(request: ReportRequest) -> dict:
     event = state.add_event("report_generated", report)
     state.audit("llm.report", {"request": request.model_dump(), "model": report["model"]})
     return {"report": report, "event": event}
+
+
+@app.get("/api/v1/reports/{report_id}/download")
+def download_report_document(report_id: str) -> FileResponse:
+    safe_id = safe_report_id(report_id)
+    path = reports_dir(settings) / f"{safe_id}.docx"
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail=f"report document not found: {report_id}")
+    state.audit("report.document.download", {"report_id": safe_id, "file_name": path.name})
+    return FileResponse(path, filename=path.name, media_type=REPORT_DOCX_CONTENT_TYPE)
 
 
 @app.post("/api/v1/video/summary")

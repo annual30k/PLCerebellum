@@ -1,0 +1,30 @@
+# Legacy filename kept for old startup commands. It now maps to Gemma 4 E4B.
+services:
+  llama:
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+    command:
+      - --hf-repo
+      - unsloth/gemma-4-E4B-it-GGUF
+      - --hf-file
+      - gemma-4-E4B-it-UD-Q4_K_XL.gguf
+      - --alias
+      - gemma4:e4b
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - -c
+      - "16384"
+      - -ngl
+      - "99"
+      - --reasoning
+      - "off"
+
+  cerebellum:
+    environment:
+      CEREBELLUM_LLM_MODEL: gemma4:e4b
+      CEREBELLUM_LLM_FALLBACK_MODEL: gemma4:e4b
+      CEREBELLUM_LLM_BATCH_MODEL: gemma4:e4b
+      CEREBELLUM_CONTEXT_TOKENS: "16384"

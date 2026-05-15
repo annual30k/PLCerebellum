@@ -100,6 +100,7 @@ class ReportRequest(BaseModel):
     selected_media_uris: list[str] = Field(default_factory=list)
     include_today_media_default: bool = True
     submit_to_backend: bool = True
+    output_format: Literal["text", "docx", "json"] = "text"
     operator_id: str | None = None
     officer_name: str | None = None
     device_id: str | None = None
