@@ -1,9 +1,21 @@
 from datetime import datetime, timezone
 from hashlib import sha256
+from uuid import uuid4
 
 import httpx
 
-from app.models import FaceAnalyzeRequest, PlateAnalyzeRequest, ReportRequest, VideoSummaryRequest
+from app.asr import transcribe_audio
+from app.evidence import list_evidence
+from app.media import resolve_media_path
+from app.models import (
+    AsrTranscribeRequest,
+    FaceAnalyzeRequest,
+    ObjectDetectRequest,
+    PlateAnalyzeRequest,
+    ReportRequest,
+    VideoSummaryRequest,
+)
+from app.objects import detect_objects
 from app.settings import Settings
 from app.state import DeviceState
 from app.vision import VisionUnavailable, detect_faces, recognize_plate
@@ -211,13 +223,17 @@ def build_structured_video_summary(request: VideoSummaryRequest, events: list[di
 
 def generate_report(request: ReportRequest, settings: Settings, state: DeviceState) -> dict:
     model = choose_llm_model(request, settings, state)
+    report_id = f"rpt-{uuid4().hex[:12]}"
+    structured_context = build_report_structured_context(request, settings, state)
     if settings.llm_base_url and model == settings.llm_model:
         try:
-            return generate_report_with_llama_cpp(request, settings, state, model)
+            report = generate_report_with_llama_cpp(request, settings, state, model, report_id, structured_context)
+            report["backend_submit"] = submit_report_to_backend(report, settings, state) if request.submit_to_backend else None
+            return report
         except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
             state.audit("llm.report.fallback", {"model": model, "error": str(exc)})
 
-    event_count = state.event_count()
+    event_count = structured_context["event_count"]
     now = datetime.now(timezone.utc).isoformat()
     title_map = {
         "daily": "单兵巡逻日报",
@@ -226,13 +242,15 @@ def generate_report(request: ReportRequest, settings: Settings, state: DeviceSta
         "incident": "异常事件报告",
     }
     operator_note = request.operator_note or "无人工补充说明"
+    media_count = structured_context["media_count"]
     content = (
-        f"{title_map[request.report_type]}：任务 {request.mission_id} 当前累计结构化事件 {event_count} 条。"
-        f"系统已汇总车牌候选、人脸候选、媒体接入和人工标记信息。"
+        f"{title_map[request.report_type]}：任务 {request.mission_id} 已整理结构化事件 {event_count} 条，"
+        f"纳入媒体证据 {media_count} 个。系统已汇总视频、录音、图片、车牌候选、人脸候选、目标检测和人工标记信息。"
         f"本报告由 {model} 模拟生成，人工补充：{operator_note}。"
         "正式入库前应由执勤人员确认 AI 生成内容，并保留原始视频证据索引。"
     )
-    return {
+    report = {
+        "report_id": report_id,
         "mission_id": request.mission_id,
         "report_type": request.report_type,
         "model": model,
@@ -240,9 +258,13 @@ def generate_report(request: ReportRequest, settings: Settings, state: DeviceSta
         "max_context_tokens": settings.max_context_tokens,
         "generated_at": now,
         "content": content,
+        "structured_context": structured_context,
+        "media_selection": structured_context["media_selection"],
         "requires_human_confirmation": True,
         "backend": "simulated-fallback",
     }
+    report["backend_submit"] = submit_report_to_backend(report, settings, state) if request.submit_to_backend else None
+    return report
 
 
 def generate_video_summary_with_llama_cpp(
@@ -291,13 +313,15 @@ def generate_report_with_llama_cpp(
     settings: Settings,
     state: DeviceState,
     model: str,
+    report_id: str,
+    structured_context: dict,
 ) -> dict:
-    report_events = compact_events_for_llm(state.event_snapshot(limit=1000), limit=1000)
+    report_events = structured_context["events"]
     event_count = len(report_events)
     recent_events = report_events[-20:]
     system_prompt = (
         "你是部署在单兵边缘智能小脑服务器中的警务报告助手。"
-        "你只能根据输入的结构化事件、人工备注和设备状态生成报告草稿。"
+        "你只能根据输入的结构化媒体、结构化事件、人工备注和设备状态生成报告草稿。"
         "不得把人脸候选或车牌候选写成确定结论，必须提示需要人工确认。"
         "输出中文，风格简洁、正式、可用于执勤日报初稿。"
         "不要输出思考过程，只输出最终报告正文。"
@@ -307,8 +331,11 @@ def generate_report_with_llama_cpp(
         f"报告类型：{request.report_type}\n"
         f"人工补充：{request.operator_note or '无'}\n"
         f"当前结构化事件数量：{event_count}\n"
+        f"媒体选择：{structured_context['media_selection']}\n"
+        f"结构化文字：{structured_context['structured_text']}\n"
+        f"结构化媒体：{structured_context['media_items']}\n"
         f"最近事件：{recent_events}\n"
-        "请生成报告草稿，包含：工作概况、识别结果摘要、异常/待确认事项、证据索引提醒。"
+        "请生成报告草稿，包含：工作概况、视频/录音/图片整理结果、识别结果摘要、异常/待确认事项、证据索引提醒。"
     )
     payload = {
         "model": model,
@@ -330,6 +357,7 @@ def generate_report_with_llama_cpp(
     if not content:
         raise ValueError("llama.cpp returned an empty response")
     return {
+        "report_id": report_id,
         "mission_id": request.mission_id,
         "report_type": request.report_type,
         "model": model,
@@ -337,9 +365,347 @@ def generate_report_with_llama_cpp(
         "max_context_tokens": settings.max_context_tokens,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "content": content,
+        "structured_context": structured_context,
+        "media_selection": structured_context["media_selection"],
         "requires_human_confirmation": True,
         "backend": "llama.cpp",
     }
+
+
+def build_report_structured_context(request: ReportRequest, settings: Settings, state: DeviceState) -> dict:
+    selected_ids = {item.strip() for item in request.selected_media_ids if item.strip()}
+    selected_uris = {item.strip() for item in request.selected_media_uris if item.strip()}
+    all_evidence = list_evidence(settings)
+    if selected_ids or selected_uris:
+        selected = [
+            item for item in all_evidence
+            if item.get("evidence_id") in selected_ids
+            or item.get("source_uri") in selected_uris
+            or item.get("source_name") in selected_uris
+        ]
+        mode = "explicit"
+    elif request.include_today_media_default:
+        selected = [
+            item for item in all_evidence
+            if item.get("evidence_type") in {"video", "audio", "image"}
+            and is_today(item.get("registered_at"))
+        ]
+        mode = "today_default"
+    else:
+        selected = []
+        mode = "none"
+
+    known_refs = {item.get("evidence_id") for item in selected} | {item.get("source_uri") for item in selected}
+    external_items = [
+        {"source_uri": uri, "evidence_id": None, "evidence_type": infer_media_type(uri), "source_name": uri.rsplit("/", 1)[-1]}
+        for uri in sorted(selected_uris)
+        if uri not in known_refs
+    ]
+    media_items = [compact_media_item(item) for item in selected] + [compact_media_item(item) for item in external_items]
+    media_items = analyze_report_media_items(media_items, request, settings, state)
+    compact_events = compact_events_for_llm(state.event_snapshot(limit=1000), limit=200)
+    media_context_text = build_media_context_text(media_items, compact_events)
+    return {
+        "mission_id": request.mission_id,
+        "report_type": request.report_type,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "media_selection": {
+            "mode": mode,
+            "selected_media_ids": sorted(selected_ids),
+            "selected_media_uris": sorted(selected_uris),
+            "include_today_media_default": request.include_today_media_default,
+        },
+        "media_count": len(media_items),
+        "media_items": media_items,
+        "event_count": len(compact_events),
+        "events": compact_events,
+        "structured_text": media_context_text,
+    }
+
+
+def compact_media_item(item: dict) -> dict:
+    return {
+        "evidence_id": item.get("evidence_id"),
+        "mission_id": item.get("mission_id"),
+        "media_type": item.get("evidence_type"),
+        "source_name": item.get("source_name"),
+        "source_uri": item.get("source_uri"),
+        "sha256": item.get("source_sha256") or item.get("sha256"),
+        "size_bytes": item.get("size_bytes"),
+        "registered_at": item.get("registered_at"),
+        "chain_status": item.get("chain_status"),
+        "note": item.get("note"),
+    }
+
+
+def analyze_report_media_items(
+    media_items: list[dict],
+    request: ReportRequest,
+    settings: Settings,
+    state: DeviceState,
+) -> list[dict]:
+    analyzed = []
+    for item in media_items:
+        media_type = str(item.get("media_type") or infer_media_type(str(item.get("source_uri") or ""))).lower()
+        source_uri = str(item.get("source_uri") or "")
+        item = {**item, "media_type": media_type}
+        try:
+            if media_type == "audio":
+                item["analysis"] = analyze_audio_media(source_uri, request, settings)
+            elif media_type == "image":
+                item["analysis"] = analyze_image_media(source_uri, request, settings, state)
+            elif media_type == "video":
+                item["analysis"] = analyze_video_media(source_uri, request, settings, state)
+            else:
+                item["analysis"] = {
+                    "status": "skipped",
+                    "reason": f"unsupported media_type: {media_type}",
+                }
+        except (FileNotFoundError, ValueError, RuntimeError, OSError) as exc:
+            item["analysis"] = {"status": "failed", "error": str(exc)}
+        state.add_event(
+            "report_media_analyzed",
+            {
+                "mission_id": request.mission_id,
+                "evidence_id": item.get("evidence_id"),
+                "source_uri": source_uri,
+                "media_type": media_type,
+                "analysis_status": item.get("analysis", {}).get("status", "ok"),
+            },
+        )
+        analyzed.append(item)
+    return analyzed
+
+
+def analyze_audio_media(source_uri: str, request: ReportRequest, settings: Settings) -> dict:
+    transcript = transcribe_audio(
+        AsrTranscribeRequest(
+            audio_uri=source_uri,
+            mission_id=request.mission_id,
+            language="zh",
+            operator_note=request.operator_note,
+            max_tokens=min(request.max_tokens, 2048),
+        ),
+        settings,
+    )
+    return {
+        "status": "ok",
+        "kind": "audio_transcript",
+        "backend": transcript.get("backend"),
+        "model": transcript.get("model"),
+        "duration_seconds": transcript.get("duration_seconds"),
+        "transcript": transcript.get("transcript"),
+        "segments": transcript.get("segments", [])[:20],
+        "requires_human_confirmation": transcript.get("requires_human_confirmation", True),
+    }
+
+
+def analyze_image_media(source_uri: str, request: ReportRequest, settings: Settings, state: DeviceState) -> dict:
+    frame_id = report_frame_id(request.mission_id, source_uri)
+    object_result = detect_objects(
+        ObjectDetectRequest(
+            frame_id=frame_id,
+            camera_id=request.device_id or settings.device_id,
+            image_uri=source_uri,
+            target_classes=["person", "car", "truck", "bus", "motorcycle", "bicycle", "bag"],
+        ),
+        settings,
+    )
+    plate_result = analyze_plate_image(
+        PlateAnalyzeRequest(frame_id=frame_id, camera_id=request.device_id or settings.device_id, image_uri=source_uri),
+        settings,
+        state,
+    )
+    face_result = analyze_face_image(
+        FaceAnalyzeRequest(frame_id=frame_id, camera_id=request.device_id or settings.device_id, image_uri=source_uri),
+        settings,
+        state,
+    )
+    return {
+        "status": "ok",
+        "kind": "image_analysis",
+        "frame_id": frame_id,
+        "objects": object_result,
+        "plates": plate_result,
+        "faces": face_result,
+        "structured_text": image_analysis_text(object_result, plate_result, face_result),
+    }
+
+
+def analyze_video_media(source_uri: str, request: ReportRequest, settings: Settings, state: DeviceState) -> dict:
+    sampled_frames = sample_video_frames(source_uri, request, settings)
+    frame_results = []
+    for frame in sampled_frames:
+        frame_results.append(analyze_image_media(frame["image_uri"], request, settings, state) | {"video_offset_seconds": frame["offset_seconds"]})
+    audio_analysis = None
+    try:
+        audio_analysis = analyze_audio_media(source_uri, request, settings)
+    except (FileNotFoundError, ValueError, RuntimeError, OSError) as exc:
+        audio_analysis = {"status": "failed", "error": str(exc)}
+    return {
+        "status": "ok",
+        "kind": "video_analysis",
+        "sampled_frame_count": len(sampled_frames),
+        "sampled_frames": frame_results,
+        "audio": audio_analysis,
+        "structured_text": video_analysis_text(frame_results, audio_analysis),
+    }
+
+
+def sample_video_frames(source_uri: str, request: ReportRequest, settings: Settings, max_frames: int = 6) -> list[dict]:
+    try:
+        import cv2
+    except ImportError as exc:
+        raise RuntimeError("opencv is required for video frame analysis") from exc
+    video_path = resolve_media_path(source_uri, settings)
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        raise RuntimeError(f"failed to open video: {source_uri}")
+    frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
+    if frame_count <= 0:
+        indices = [0]
+    else:
+        step = max(frame_count // max_frames, 1)
+        indices = list(range(0, frame_count, step))[:max_frames]
+    output_dir = settings.stream_frame_dir / "report_media" / report_frame_id(request.mission_id, source_uri)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    frames = []
+    try:
+        for index in indices:
+            capture.set(cv2.CAP_PROP_POS_FRAMES, index)
+            ok, frame = capture.read()
+            if not ok:
+                continue
+            frame_id = f"frame-{index:08d}"
+            path = output_dir / f"{frame_id}.jpg"
+            if not cv2.imwrite(str(path), frame):
+                continue
+            frames.append(
+                {
+                    "frame_index": index,
+                    "offset_seconds": round(index / fps, 3) if fps > 0 else None,
+                    "image_uri": str(path),
+                }
+            )
+    finally:
+        capture.release()
+    return frames
+
+
+def image_analysis_text(object_result: dict, plate_result: dict, face_result: dict) -> str:
+    objects = [
+        item.get("label")
+        for item in object_result.get("detections", [])[:10]
+        if item.get("label")
+    ]
+    plates = [
+        item.get("plate_number")
+        for item in plate_result.get("candidates", [])[:10]
+        if item.get("plate_number")
+    ]
+    face_count = face_result.get("face_count", 0)
+    candidate_count = face_result.get("candidate_count", 0)
+    return (
+        f"图片识别：目标={objects or '未检出'}；"
+        f"车牌候选={plates or '未检出'}；"
+        f"人脸数量={face_count}，人脸候选={candidate_count}。"
+    )
+
+
+def video_analysis_text(frame_results: list[dict], audio_analysis: dict | None) -> str:
+    lines = [f"视频抽帧分析：共抽取 {len(frame_results)} 帧。"]
+    for index, frame in enumerate(frame_results, start=1):
+        lines.append(f"{index}. {frame.get('video_offset_seconds')} 秒：{frame.get('structured_text')}")
+    transcript = (audio_analysis or {}).get("transcript")
+    if transcript:
+        lines.append(f"视频音频转写：{str(transcript)[:1200]}")
+    elif audio_analysis:
+        lines.append(f"视频音频转写状态：{audio_analysis.get('status')} {audio_analysis.get('error') or ''}".strip())
+    return "\n".join(lines)
+
+
+def report_frame_id(mission_id: str, source_uri: str) -> str:
+    digest = sha256(f"{mission_id}:{source_uri}".encode()).hexdigest()[:12]
+    return f"report-{digest}"
+
+
+def build_media_context_text(media_items: list[dict], events: list[dict]) -> str:
+    type_counts = {}
+    for item in media_items:
+        media_type = item.get("media_type") or "unknown"
+        type_counts[media_type] = type_counts.get(media_type, 0) + 1
+    lines = [
+        f"媒体证据共 {len(media_items)} 个，类型统计：{type_counts}。",
+        f"结构化事件共 {len(events)} 条，已压缩为车牌、人脸、目标检测、音频转写、视频摘要和证据登记要点。",
+    ]
+    for index, item in enumerate(media_items[:50], start=1):
+        lines.append(
+            f"{index}. {item.get('media_type') or 'unknown'}：{item.get('source_name') or item.get('source_uri')}; "
+            f"证据ID={item.get('evidence_id') or '-'}; 时间={item.get('registered_at') or '-'}; "
+            f"SHA256={item.get('sha256') or '-'}; 备注={item.get('note') or '-'}。"
+        )
+        analysis = item.get("analysis") or {}
+        if analysis.get("structured_text"):
+            lines.append(f"   分析文字：{analysis['structured_text']}")
+        elif analysis.get("transcript"):
+            lines.append(f"   录音转写：{str(analysis['transcript'])[:1200]}")
+        elif analysis:
+            lines.append(f"   分析状态：{analysis.get('status')} {analysis.get('error') or analysis.get('reason') or ''}".strip())
+    return "\n".join(lines)
+
+
+def is_today(value: str | None) -> bool:
+    if not value:
+        return False
+    try:
+        normalized = value.replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(normalized)
+        return parsed.astimezone().date() == datetime.now().astimezone().date()
+    except ValueError:
+        return False
+
+
+def infer_media_type(uri: str) -> str:
+    suffix = uri.rsplit(".", 1)[-1].lower() if "." in uri else ""
+    if suffix in {"mp4", "mov", "avi", "mkv", "webm"}:
+        return "video"
+    if suffix in {"mp3", "wav", "m4a", "aac", "opus", "flac"}:
+        return "audio"
+    if suffix in {"jpg", "jpeg", "png", "webp", "bmp"}:
+        return "image"
+    return "other"
+
+
+def submit_report_to_backend(report: dict, settings: Settings, state: DeviceState) -> dict | None:
+    if not settings.backend_base_url or not settings.backend_token:
+        return {"status": "skipped", "reason": "backend_base_url_or_token_missing"}
+    payload = {
+        "reportId": report.get("report_id"),
+        "missionId": report.get("mission_id"),
+        "reportType": report.get("report_type"),
+        "deviceId": settings.device_id,
+        "model": report.get("model"),
+        "backend": report.get("backend"),
+        "generatedAt": report.get("generated_at"),
+        "content": report.get("content"),
+        "requiresHumanConfirmation": report.get("requires_human_confirmation"),
+        "mediaSelection": report.get("media_selection"),
+        "structuredContext": report.get("structured_context"),
+    }
+    url = f"{settings.backend_base_url.rstrip('/')}/api/v1/cerebellum/daily-reports"
+    headers = {
+        "Authorization": f"Bearer {settings.backend_token}",
+        "X-Cerebellum-Token": settings.backend_token,
+    }
+    try:
+        response = httpx.post(url, json=payload, headers=headers, timeout=30.0)
+        response.raise_for_status()
+        state.audit("backend.daily_report.submit", {"report_id": report.get("report_id"), "status_code": response.status_code})
+        return {"status": "submitted", "status_code": response.status_code}
+    except httpx.HTTPError as exc:
+        state.audit("backend.daily_report.submit_failed", {"report_id": report.get("report_id"), "error": str(exc)})
+        return {"status": "failed", "error": str(exc)}
 
 
 def compact_events_for_llm(events: list[dict], limit: int = 20) -> list[dict]:

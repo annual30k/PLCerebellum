@@ -1,21 +1,26 @@
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from secrets import compare_digest
+import shutil
+from uuid import uuid4
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
 
 from app.asr import local_asr_configured, transcribe_audio
 from app.evidence import list_evidence, register_evidence
+from app.evidence import list_uploaded_files, resolve_uploaded_file, safe_upload_name, uploaded_file_record, uploaded_files_dir
 from app.face_sync import apply_face_library_bundle, face_library_status, sync_face_library_from_backend
 from app.face_sync_scheduler import FaceLibrarySyncScheduler
 from app.function_recognition import recognize_function
 from app.models import (
     AsrTranscribeRequest,
+    CerebellumCommandRequest,
     EvidenceRegisterRequest,
     FaceLibraryApplyRequest,
     FaceLibrarySyncRequest,
+    FileOperationRequest,
     FaceEnrollRequest,
     FaceAnalyzeRequest,
     FunctionRecognizeRequest,
@@ -146,6 +151,114 @@ def ingest_media(request: MediaIngestRequest) -> dict:
     )
     state.audit("media.ingest", event)
     return {"accepted": True, "event": event}
+
+
+@app.post("/api/v1/commands")
+def execute_command(request: CerebellumCommandRequest) -> dict:
+    if request.command == "sync_face_library":
+        result = sync_face_library_from_backend(
+            FaceLibrarySyncRequest(
+                backend_url=request.payload.get("backend_url"),
+                token=request.payload.get("token"),
+                device_id=request.payload.get("device_id"),
+                current_version=request.payload.get("current_version"),
+                force=bool(request.payload.get("force", False)),
+            ),
+            settings,
+        )
+    elif request.command == "clear_completed_streams":
+        streams.stop_all()
+        result = {"cleared": True, "streams": streams.list()}
+    elif request.command == "refresh_files":
+        result = {"count": len(list_uploaded_files(settings)), "files": list_uploaded_files(settings)}
+    elif request.command == "mark_media_sync_completed":
+        result = {"completed": True, "marked_at": datetime.now(timezone.utc).isoformat()}
+    elif request.command == "health_check":
+        result = health()
+    else:
+        raise HTTPException(status_code=400, detail=f"unsupported command: {request.command}")
+    event = state.add_event("command_executed", {"request": request.model_dump(), "result": result})
+    state.audit("command.execute", {"request": request.model_dump(), "result": result}, actor=request.operator_id or "remote-client")
+    return {"accepted": True, "result": result, "event": event}
+
+
+@app.post("/api/v1/files/upload")
+def upload_file(
+    file: UploadFile = File(...),
+    mission_id: str | None = Form(default=None),
+    evidence_type: str = Form(default="other"),
+    note: str | None = Form(default=None),
+    register: bool = Form(default=True),
+    encrypt: bool = Form(default=False),
+) -> dict:
+    safe_name = safe_upload_name(file.filename or "upload.bin")
+    stored_name = f"upl-{uuid4().hex[:12]}-{safe_name}"
+    stored_path = uploaded_files_dir(settings) / stored_name
+    with stored_path.open("wb") as output:
+        shutil.copyfileobj(file.file, output)
+    uploaded = uploaded_file_record(stored_path, settings)
+    evidence = None
+    if register:
+        evidence = register_evidence(
+            EvidenceRegisterRequest(
+                file_uri=str(stored_path),
+                evidence_type=evidence_type if evidence_type in {"video", "audio", "image", "document", "other"} else "other",
+                mission_id=mission_id,
+                encrypt=encrypt,
+                note=note,
+            ),
+            settings,
+        )
+    event = state.add_event("file_uploaded", {"file": uploaded, "evidence": evidence})
+    state.audit("file.upload", {"file_name": safe_name, "stored_path": str(stored_path), "registered": register})
+    return {"file": uploaded, "evidence": evidence, "event": event}
+
+
+@app.get("/api/v1/files")
+def get_files() -> dict:
+    files = list_uploaded_files(settings)
+    return {"count": len(files), "files": files[-200:]}
+
+
+@app.get("/api/v1/files/{file_name}/download")
+def download_file(file_name: str) -> FileResponse:
+    try:
+        path = resolve_uploaded_file(file_name, settings)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    state.audit("file.download", {"file_name": file_name})
+    return FileResponse(path, filename=path.name)
+
+
+@app.post("/api/v1/files/{file_name}/operations")
+def operate_file(file_name: str, request: FileOperationRequest) -> dict:
+    try:
+        path = resolve_uploaded_file(file_name, settings)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if request.operation == "delete":
+        path.unlink()
+        result = {"deleted": True, "file_name": file_name}
+    elif request.operation == "register_evidence":
+        result = register_evidence(
+            EvidenceRegisterRequest(
+                file_uri=str(path),
+                evidence_type=request.evidence_type,
+                mission_id=request.mission_id,
+                encrypt=False,
+                note=request.note,
+            ),
+            settings,
+        )
+    else:
+        raise HTTPException(status_code=400, detail=f"unsupported operation: {request.operation}")
+    event = state.add_event("file_operation", {"file_name": file_name, "operation": request.operation, "result": result})
+    state.audit("file.operation", {"file_name": file_name, "operation": request.operation, "result": result})
+    return {"result": result, "event": event}
 
 
 @app.post("/api/v1/functions/recognize")

@@ -66,6 +66,45 @@ def list_evidence(settings: Settings) -> list[dict]:
     return items
 
 
+def uploaded_files_dir(settings: Settings) -> Path:
+    path = settings.data_dir / "uploads"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def safe_upload_name(file_name: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() or ch in {".", "_", "-"} else "_" for ch in file_name).strip("._")
+    return cleaned[:160] or "upload.bin"
+
+
+def uploaded_file_record(path: Path, settings: Settings) -> dict:
+    stat = path.stat()
+    return {
+        "file_id": path.stem,
+        "file_name": path.name,
+        "file_uri": str(path),
+        "size_bytes": stat.st_size,
+        "sha256": hash_file(path),
+        "uploaded_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+        "download_url": f"/api/v1/files/{path.name}/download",
+    }
+
+
+def list_uploaded_files(settings: Settings) -> list[dict]:
+    upload_dir = uploaded_files_dir(settings)
+    return [uploaded_file_record(path, settings) for path in sorted(upload_dir.iterdir()) if path.is_file()]
+
+
+def resolve_uploaded_file(file_name: str, settings: Settings) -> Path:
+    upload_dir = uploaded_files_dir(settings).resolve()
+    path = (upload_dir / file_name).resolve()
+    if not (path == upload_dir or upload_dir in path.parents):
+        raise ValueError(f"file path is outside upload dir: {file_name}")
+    if not path.exists() or not path.is_file():
+        raise FileNotFoundError(file_name)
+    return path
+
+
 def hash_file(path: Path) -> str:
     digest = sha256()
     with path.open("rb") as file:

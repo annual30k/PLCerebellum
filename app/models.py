@@ -96,6 +96,13 @@ class ReportRequest(BaseModel):
     report_type: Literal["daily", "video_summary", "handover", "incident"] = "daily"
     prefer_quality: bool = False
     operator_note: str | None = None
+    selected_media_ids: list[str] = Field(default_factory=list)
+    selected_media_uris: list[str] = Field(default_factory=list)
+    include_today_media_default: bool = True
+    submit_to_backend: bool = True
+    operator_id: str | None = None
+    officer_name: str | None = None
+    device_id: str | None = None
     max_tokens: int = Field(default=1200, ge=100, le=4096)
 
 
@@ -105,6 +112,26 @@ class EvidenceRegisterRequest(BaseModel):
     mission_id: str | None = Field(default=None, examples=["mission-20260514-001"])
     encrypt: bool | None = None
     note: str | None = None
+
+
+class FileOperationRequest(BaseModel):
+    operation: Literal["delete", "register_evidence"]
+    mission_id: str | None = Field(default=None, examples=["mission-20260514-001"])
+    evidence_type: Literal["video", "audio", "image", "document", "other"] = "other"
+    note: str | None = None
+
+
+class CerebellumCommandRequest(BaseModel):
+    command: Literal[
+        "refresh_files",
+        "clear_completed_streams",
+        "sync_face_library",
+        "health_check",
+        "mark_media_sync_completed",
+    ]
+    request_id: str | None = None
+    operator_id: str | None = None
+    payload: dict = Field(default_factory=dict)
 
 
 class SyncTaskRequest(BaseModel):
